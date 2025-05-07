@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import RobustScaler
@@ -16,6 +17,7 @@ class ForexDataProcessor:
 
     def __init__(self):
         self.scaler = RobustScaler()
+        self.is_fitted = False
 
     def get_mt5_historical_data(
         self, symbol: str, timeframe: str, num_candles: int = 5000
@@ -198,18 +200,57 @@ class ForexDataProcessor:
             if df is None:
                 return None
 
+            # Select features for scaling
+            feature_columns = [
+                "returns",
+                "log_returns",
+                "volatility",
+                "sma_10",
+                "sma_20",
+                "sma_50",
+                "ema_10",
+                "ema_20",
+                "ema_50",
+                "bb_width",
+                "rsi",
+                "macd",
+                "macd_hist",
+                "atr",
+            ]
+
+            # Fit scaler if not already fitted
+            if not self.is_fitted:
+                self.scaler.fit(df[feature_columns])
+                self.is_fitted = True
+
             # Select latest data points
             latest_data = df.iloc[-lookback_period:]
 
             # Scale features
-            feature_columns = [col for col in df.columns if col not in ["target"]]
             scaled_data = self.scaler.transform(latest_data[feature_columns])
 
-            # Reshape for model input
-            sequence = np.array([scaled_data])
+            # Reshape for model input (batch_size, timesteps, features)
+            sequence = np.array([scaled_data], dtype=np.float32)
 
             return sequence
 
         except Exception as e:
             logger.error(f"Error preparing latest sequence: {str(e)}")
             return None
+
+    def load_scaler(self, symbol: str, timeframe: str) -> bool:
+        """Load saved scaler for specific symbol and timeframe"""
+        try:
+            scaler_path = TradingConfig.get_scaler_path(symbol, timeframe)
+            if not os.path.exists(scaler_path):
+                logger.error(f"Scaler file not found: {scaler_path}")
+                return False
+
+            self.scaler = joblib.load(scaler_path)
+            self.is_fitted = True
+            logger.info(f"Scaler loaded successfully for {symbol}_{timeframe}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error loading scaler: {str(e)}")
+            return False
