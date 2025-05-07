@@ -17,6 +17,7 @@ class TradingConfig:
     MT5_SERVER = "Exness-MT5Trial7"
 
     # Model File Paths
+    MODEL_DIR = "models"
     MODEL_PATH = "models/forex_model.h5"
     RF_MODEL_PATH = "models/rf_model.pkl"
     XGB_MODEL_PATH = "models/xgb_model.pkl"
@@ -53,16 +54,50 @@ class TradingConfig:
     }
 
     @staticmethod
-    def validate_timeframe(timeframe):
+    def validate_symbol(symbol: str) -> bool:
+        """Validate trading symbol"""
+        if not isinstance(symbol, str):
+            return False
+        return len(symbol) >= 6 and symbol.isupper()
+
+    @staticmethod
+    def validate_timeframe(timeframe: str) -> bool:
         """Validate if timeframe is supported"""
-        return timeframe.upper() in TradingConfig.VALID_TIMEFRAMES
+        valid_timeframes = {"M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"}
+        return timeframe.upper() in valid_timeframes
 
     @staticmethod
-    def get_model_path(symbol, timeframe):
+    def get_model_path(symbol: str, timeframe: str) -> str:
         """Get model path for specific symbol and timeframe"""
-        return os.path.join("models", f"{symbol}_{timeframe}_model.h5")
+        try:
+            # Validate inputs
+            if not TradingConfig.validate_symbol(symbol):
+                raise ValueError(f"Invalid symbol: {symbol}")
+            if not TradingConfig.validate_timeframe(timeframe):
+                raise ValueError(f"Invalid timeframe: {timeframe}")
+
+            # Create standardized filename
+            filename = f"{symbol.upper()}_{timeframe.upper()}_model.h5"
+            return os.path.join(TradingConfig.MODEL_DIR, filename)
+
+        except Exception as e:
+            logger.error(f"Error getting model path: {str(e)}")
+            return ""
 
     @staticmethod
-    def get_scaler_path(symbol, timeframe):
+    def get_scaler_path(symbol: str, timeframe: str) -> str:
         """Get scaler path for specific symbol and timeframe"""
-        return os.path.join("models", f"{symbol}_{timeframe}_scaler.pkl")
+        try:
+            # Validate inputs
+            if not TradingConfig.validate_symbol(symbol):
+                raise ValueError(f"Invalid symbol: {symbol}")
+            if not TradingConfig.validate_timeframe(timeframe):
+                raise ValueError(f"Invalid timeframe: {timeframe}")
+
+            # Create standardized filename
+            filename = f"{symbol.upper()}_{timeframe.upper()}_scaler.pkl"
+            return os.path.join(TradingConfig.MODEL_DIR, filename)
+
+        except Exception as e:
+            logger.error(f"Error getting scaler path: {str(e)}")
+            return ""

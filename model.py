@@ -157,16 +157,27 @@ class DeepForexModel:
             logger.error(f"Error saving model: {str(e)}")
             return False
 
-    def load_model(self, symbol, timeframe):
+    def load_model(self, symbol: str, timeframe: str) -> bool:
         """Load saved model and scaler"""
         try:
+            # Get paths
             model_path = TradingConfig.get_model_path(symbol, timeframe)
             scaler_path = TradingConfig.get_scaler_path(symbol, timeframe)
 
-            if not (os.path.exists(model_path) and os.path.exists(scaler_path)):
-                logger.error(f"Model files not found for {symbol}_{timeframe}")
+            if not model_path or not scaler_path:
+                logger.error("Invalid model or scaler path")
                 return False
 
+            # Check if files exist
+            if not os.path.exists(model_path):
+                logger.error(f"Model file not found: {model_path}")
+                return False
+
+            if not os.path.exists(scaler_path):
+                logger.error(f"Scaler file not found: {scaler_path}")
+                return False
+
+            # Load model with custom objects
             self.model = tf.keras.models.load_model(
                 model_path,
                 custom_objects={
@@ -176,9 +187,13 @@ class DeepForexModel:
                     "f1_m": self._f1_m,
                 },
             )
+
+            # Load scaler
             self.scaler = joblib.load(scaler_path)
 
-            logger.info(f"Model loaded successfully for {symbol}_{timeframe}")
+            logger.info(
+                f"Model and scaler loaded successfully for {symbol}_{timeframe}"
+            )
             return True
 
         except Exception as e:
