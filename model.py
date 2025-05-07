@@ -46,7 +46,7 @@ class DeepForexModel:
         """Create hybrid CNN-LSTM model with attention mechanism"""
         try:
             # Input layer
-            input_layer = Input(shape=input_shape)
+            input_layer = Input(shape=input_shape, dtype=tf.float32)  # Specify dtype
 
             # CNN branch
             conv = Conv1D(filters=64, kernel_size=3, padding="same")(input_layer)
@@ -81,16 +81,11 @@ class DeepForexModel:
             # Create model
             model = Model(inputs=input_layer, outputs=output)
 
-            # Learning rate schedule
-            lr_schedule = ExponentialDecay(
-                TradingConfig.INITIAL_LEARNING_RATE, decay_steps=1000, decay_rate=0.9
-            )
-
-            # Compile model
+            # Compile model with updated loss function
             model.compile(
-                optimizer=Adam(learning_rate=lr_schedule),
+                optimizer=Adam(learning_rate=1e-3),
                 loss=self._weighted_binary_crossentropy,
-                metrics=["accuracy", self._precision_m, self._recall_m, self._f1_m],
+                metrics=["accuracy"],
             )
 
             self.model = model
@@ -101,19 +96,25 @@ class DeepForexModel:
             return None
 
     def _weighted_binary_crossentropy(self, y_true, y_pred):
-        """Custom loss function with asymmetric penalties"""
+        """Custom loss function with explicit type casting"""
         try:
+            # Explicitly cast inputs to float32
             y_true = tf.cast(y_true, tf.float32)
             y_pred = tf.cast(y_pred, tf.float32)
 
-            # Penalize false positives more heavily
-            weights = tf.where(y_true > 0.5, 2.0, 1.0)
+            # Weight for positive class
+            pos_weight = 2.0
 
-            # Calculate binary crossentropy
-            bce = tf.keras.losses.binary_crossentropy(y_true, y_pred)
-            weighted_bce = bce * weights
+            # Calculate weighted binary crossentropy
+            epsilon = tf.constant(1e-7, dtype=tf.float32)
+            y_pred = tf.clip_by_value(y_pred, epsilon, 1.0 - epsilon)
 
-            return tf.reduce_mean(weighted_bce)
+            loss = -tf.reduce_mean(
+                pos_weight * y_true * tf.math.log(y_pred)
+                + (1 - y_true) * tf.math.log(1 - y_pred)
+            )
+
+            return loss
 
         except Exception as e:
             logger.error(f"Error in loss function: {str(e)}")

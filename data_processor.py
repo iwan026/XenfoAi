@@ -123,12 +123,12 @@ class ForexDataProcessor:
             return None
 
     def prepare_sequences(
-        self, df: pd.DataFrame, lookback_period: int = TradingConfig.LOOKBACK_PERIOD
+        self, df: pd.DataFrame, lookback_period: int = 60
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Prepare sequences for training/prediction"""
         try:
             # Calculate target variable (1 for price up, 0 for price down)
-            df["target"] = (df["close"].shift(-1) > df["close"]).astype(int)
+            df["target"] = (df["close"].shift(-1) > df["close"]).astype(np.float32)
 
             # Select features for training
             feature_columns = [
@@ -160,11 +160,15 @@ class ForexDataProcessor:
                 X.append(scaled_df.iloc[i : i + lookback_period].values)
                 y.append(df["target"].iloc[i + lookback_period])
 
-            return np.array(X), np.array(y)
+            # Perbaikan: Convert ke numpy array dengan tipe data yang benar
+            X = np.array(X, dtype=np.float32)
+            y = np.array(y, dtype=np.float32)
+
+            return X, y
 
         except Exception as e:
             logger.error(f"Error preparing sequences: {str(e)}")
-            return np.array([]), np.array([])
+            return np.array([], dtype=np.float32), np.array([], dtype=np.float32)
 
     def create_train_test_split(
         self, X: np.ndarray, y: np.ndarray, test_size: float = 0.2

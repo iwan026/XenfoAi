@@ -2,6 +2,7 @@ import os
 import logging
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 import tensorflow as tf
 from pathlib import Path
 import MetaTrader5 as mt5
@@ -25,7 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def train_model(symbol="EURUSD", timeframe="H1", num_candles=10000):
+def train_model(symbol="EURUSD", timeframe="H1", num_candles=50000):
     """Train model for specific symbol and timeframe"""
     try:
         print(f"\nTraining model for {symbol} {timeframe}")
@@ -38,25 +39,34 @@ def train_model(symbol="EURUSD", timeframe="H1", num_candles=10000):
         # Get historical data
         print("\nFetching historical data...")
         df = data_processor.get_mt5_historical_data(symbol, timeframe, num_candles)
-        if df is None:
+        if df is None or df.empty:
             print("Failed to fetch historical data")
             return False
 
         # Add technical indicators
         print("Adding technical indicators...")
         df = data_processor.add_technical_indicators(df)
-        if df is None:
+        if df is None or df.empty:
             print("Failed to add technical indicators")
             return False
 
         # Prepare sequences
         print("Preparing training sequences...")
         X, y = data_processor.prepare_sequences(df, TradingConfig.LOOKBACK_PERIOD)
-        if len(X) == 0 or len(y) == 0:
-            print("Failed to prepare sequences")
+
+        # Validate data types and shapes
+        print("\nValidating data...")
+        print(f"X dtype: {X.dtype}, shape: {X.shape}")
+        print(f"y dtype: {y.dtype}, shape: {y.shape}")
+
+        if X.shape[0] == 0 or y.shape[0] == 0:
+            print("Empty training data")
             return False
 
-        print(f"Training data shape: X={X.shape}, y={y.shape}")
+        # Verify no NaN values
+        if np.isnan(X).any() or np.isnan(y).any():
+            print("Training data contains NaN values")
+            return False
 
         # Create and train model
         print("\nCreating model architecture...")
@@ -72,27 +82,35 @@ def train_model(symbol="EURUSD", timeframe="H1", num_candles=10000):
             validation_split=0.2,
             callbacks=[
                 tf.keras.callbacks.EarlyStopping(
-                    monitor="val_loss",
-                    patience=TradingConfig.EARLY_STOPPING_PATIENCE,
-                    restore_best_weights=True,
+                    monitor="val_loss", patience=10, restore_best_weights=True
                 ),
                 tf.keras.callbacks.ReduceLROnPlateau(
-                    monitor="val_loss",
-                    factor=0.5,
-                    patience=TradingConfig.REDUCE_LR_PATIENCE,
+                    monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6
                 ),
             ],
+            verbose=1,
         )
 
         # Save model
         print("\nSaving model...")
         if model.save_model(symbol, timeframe):
-            print(f"Model saved successfully!")
+            print("Model saved successfully!")
+
+            # Plot training history
+            plt.figure(figsize=(10, 5))
+            plt.plot(history.history["loss"], label="Training Loss")
+            plt.plot(history.history["val_loss"], label="Validation Loss")
+            plt.title("Model Loss")
+            plt.xlabel("Epoch")
+            plt.ylabel("Loss")
+            plt.legend()
+            plt.savefig(f"training_history_{symbol}_{timeframe}.png")
+            plt.close()
+
+            return True
         else:
             print("Failed to save model")
             return False
-
-        return True
 
     except Exception as e:
         logger.error(f"Error in training: {str(e)}")
@@ -101,17 +119,20 @@ def train_model(symbol="EURUSD", timeframe="H1", num_candles=10000):
 
 
 if __name__ == "__main__":
+    # Set random seeds for reproducibility
+    np.random.seed(42)
+    tf.random.set_seed(42)
+
     # Initialize MT5
     if not mt5.initialize():
         print("Failed to initialize MT5")
         exit()
 
     try:
-        # Train for specific pair
-        symbol = "EURUSD"  # Bisa diganti dengan pair lain
-        timeframe = "H1"  # Bisa diganti dengan timeframe lain
-
+        symbol = "EURUSD"
+        timeframe = "H1"
         success = train_model(symbol, timeframe)
+
         if success:
             print("\nTraining completed successfully!")
         else:
