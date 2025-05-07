@@ -164,8 +164,9 @@ class DeepForexModel:
             model_path = TradingConfig.get_model_path(symbol, timeframe)
             scaler_path = TradingConfig.get_scaler_path(symbol, timeframe)
 
+            # Validate paths
             if not model_path or not scaler_path:
-                logger.error("Invalid model or scaler path")
+                logger.error(f"Invalid model/scaler path for {symbol}_{timeframe}")
                 return False
 
             # Check if files exist
@@ -191,9 +192,7 @@ class DeepForexModel:
             # Load scaler
             self.scaler = joblib.load(scaler_path)
 
-            logger.info(
-                f"Model and scaler loaded successfully for {symbol}_{timeframe}"
-            )
+            logger.info(f"Model loaded successfully for {symbol}_{timeframe}")
             return True
 
         except Exception as e:

@@ -54,31 +54,43 @@ class TradingConfig:
     }
 
     @staticmethod
-    def validate_symbol(symbol: str) -> bool:
-        """Validate trading symbol"""
-        if not isinstance(symbol, str):
-            return False
-        return len(symbol) >= 6 and symbol.isupper()
+    def validate_symbol_timeframe(symbol: str, timeframe: str) -> bool:
+        """Validate symbol and timeframe combination"""
+        try:
+            # Validate symbol
+            if not isinstance(symbol, str) or len(symbol) < 6:
+                logger.error(f"Invalid symbol format: {symbol}")
+                return False
 
-    @staticmethod
-    def validate_timeframe(timeframe: str) -> bool:
-        """Validate if timeframe is supported"""
-        valid_timeframes = {"M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"}
-        return timeframe.upper() in valid_timeframes
+            # Validate timeframe
+            valid_timeframes = {"M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"}
+            if timeframe.upper() not in valid_timeframes:
+                logger.error(f"Invalid timeframe: {timeframe}")
+                return False
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error validating symbol/timeframe: {str(e)}")
+            return False
 
     @staticmethod
     def get_model_path(symbol: str, timeframe: str) -> str:
-        """Get model path for specific symbol and timeframe"""
+        """Get model file path"""
         try:
             # Validate inputs
-            if not TradingConfig.validate_symbol(symbol):
-                raise ValueError(f"Invalid symbol: {symbol}")
-            if not TradingConfig.validate_timeframe(timeframe):
-                raise ValueError(f"Invalid timeframe: {timeframe}")
+            if not TradingConfig.validate_symbol_timeframe(symbol, timeframe):
+                return ""
 
             # Create standardized filename
-            filename = f"{symbol.upper()}_{timeframe.upper()}_model.h5"
-            return os.path.join(TradingConfig.MODEL_DIR, filename)
+            symbol = symbol.upper()
+            timeframe = timeframe.upper()
+            filename = f"{symbol}_{timeframe}_model.h5"
+
+            # Construct full path
+            model_path = os.path.join(TradingConfig.MODEL_DIR, filename)
+
+            return model_path
 
         except Exception as e:
             logger.error(f"Error getting model path: {str(e)}")
@@ -86,17 +98,21 @@ class TradingConfig:
 
     @staticmethod
     def get_scaler_path(symbol: str, timeframe: str) -> str:
-        """Get scaler path for specific symbol and timeframe"""
+        """Get scaler file path"""
         try:
             # Validate inputs
-            if not TradingConfig.validate_symbol(symbol):
-                raise ValueError(f"Invalid symbol: {symbol}")
-            if not TradingConfig.validate_timeframe(timeframe):
-                raise ValueError(f"Invalid timeframe: {timeframe}")
+            if not TradingConfig.validate_symbol_timeframe(symbol, timeframe):
+                return ""
 
             # Create standardized filename
-            filename = f"{symbol.upper()}_{timeframe.upper()}_scaler.pkl"
-            return os.path.join(TradingConfig.MODEL_DIR, filename)
+            symbol = symbol.upper()
+            timeframe = timeframe.upper()
+            filename = f"{symbol}_{timeframe}_scaler.pkl"
+
+            # Construct full path
+            scaler_path = os.path.join(TradingConfig.MODEL_DIR, filename)
+
+            return scaler_path
 
         except Exception as e:
             logger.error(f"Error getting scaler path: {str(e)}")
