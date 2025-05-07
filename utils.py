@@ -1,302 +1,387 @@
-import logging
-import json
 import numpy as np
 import pandas as pd
-from datetime import datetime, timezone
-from pathlib import Path
 import matplotlib.pyplot as plt
-from typing import Dict, List, Optional, Union, Tuple
-from config import TradingConfig
+import seaborn as sns
+from typing import Dict, List, Tuple, Optional, Union
+import logging
+from datetime import datetime, timezone
+import mplfinance as mpf
+from scipy import stats
+import talib
+from sklearn.preprocessing import StandardScaler
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 logger = logging.getLogger(__name__)
 
 
 class TradingUtils:
-    """Utility functions for forex trading application"""
+    """Enhanced utility class for forex trading visualization and analysis"""
 
-    @staticmethod
-    def setup_logging() -> None:
-        """Setup logging configuration"""
-        try:
-            logging.basicConfig(
-                filename=TradingConfig.LOG_FILE,
-                level=logging.INFO,
-                format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
-            )
+    def __init__(self):
+        self.current_user = "iwan026"
+        self.current_time = datetime.strptime(
+            "2025-05-07 08:57:59", "%Y-%m-%d %H:%M:%S"
+        )
+        self.theme = "dark"
+        plt.style.use("dark_background" if self.theme == "dark" else "default")
 
-            # Also log to console
-            console_handler = logging.StreamHandler()
-            console_handler.setLevel(logging.INFO)
-            formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-            console_handler.setFormatter(formatter)
-            logging.getLogger("").addHandler(console_handler)
-
-        except Exception as e:
-            print(f"Error setting up logging: {str(e)}")
-
-    @staticmethod
-    def create_trading_chart(
+    def plot_trading_chart(
+        self,
         df: pd.DataFrame,
         signals: Optional[List[Dict]] = None,
         save_path: Optional[str] = None,
-    ) -> Optional[str]:
-        """Create technical analysis chart with signals"""
+        plot_type: str = "interactive",
+    ) -> None:
+        """Enhanced trading chart visualization"""
         try:
-            # Create figure with secondary y-axis
-            fig, (ax1, ax2, ax3) = plt.subplots(
-                3, 1, figsize=(12, 8), gridspec_kw={"height_ratios": [3, 1, 1]}
-            )
-
-            # Plot candlesticks
-            width = 0.6
-            width2 = 0.05
-
-            up = df[df.close >= df.open]
-            down = df[df.close < df.open]
-
-            # Plot up candles
-            ax1.bar(
-                up.index,
-                up.close - up.open,
-                width,
-                bottom=up.open,
-                color="green",
-                alpha=0.8,
-            )
-            ax1.bar(
-                up.index,
-                up.high - up.close,
-                width2,
-                bottom=up.close,
-                color="green",
-                alpha=0.8,
-            )
-            ax1.bar(
-                up.index,
-                up.low - up.open,
-                width2,
-                bottom=up.open,
-                color="green",
-                alpha=0.8,
-            )
-
-            # Plot down candles
-            ax1.bar(
-                down.index,
-                down.close - down.open,
-                width,
-                bottom=down.open,
-                color="red",
-                alpha=0.8,
-            )
-            ax1.bar(
-                down.index,
-                down.high - down.open,
-                width2,
-                bottom=down.open,
-                color="red",
-                alpha=0.8,
-            )
-            ax1.bar(
-                down.index,
-                down.low - down.close,
-                width2,
-                bottom=down.close,
-                color="red",
-                alpha=0.8,
-            )
-
-            # Add technical indicators
-            ax1.plot(df.index, df.sma_20, "b-", label="SMA 20", alpha=0.7)
-            ax1.plot(df.index, df.ema_50, "y-", label="EMA 50", alpha=0.7)
-
-            # Add Bollinger Bands
-            ax1.plot(df.index, df["bb_middle"], "k--", alpha=0.3)
-            ax1.fill_between(
-                df.index, df["bb_upper"], df["bb_lower"], alpha=0.1, color="gray"
-            )
-
-            # Add RSI
-            ax2.plot(df.index, df.rsi, "purple", label="RSI")
-            ax2.axhline(y=70, color="r", linestyle="--", alpha=0.3)
-            ax2.axhline(y=30, color="g", linestyle="--", alpha=0.3)
-            ax2.set_ylim(0, 100)
-
-            # Add MACD
-            ax3.plot(df.index, df["macd"], "b-", label="MACD")
-            ax3.plot(df.index, df["macd_signal"], "r-", label="Signal")
-            ax3.bar(df.index, df["macd_hist"], 0.02, label="Histogram")
-
-            # Add trading signals if provided
-            if signals:
-                for signal in signals:
-                    signal_time = pd.to_datetime(signal["timestamp"])
-                    if signal_time in df.index:
-                        color = "green" if signal["signal"] == "BUY" else "red"
-                        ax1.axvline(x=signal_time, color=color, alpha=0.5)
-
-            # Customize appearance
-            ax1.set_title(
-                f"Trading Chart - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-            ax1.legend()
-            ax1.grid(True, alpha=0.3)
-
-            ax2.set_title("RSI (14)")
-            ax2.grid(True, alpha=0.3)
-
-            ax3.set_title("MACD")
-            ax3.legend()
-            ax3.grid(True, alpha=0.3)
-
-            plt.tight_layout()
-
-            # Save or show chart
-            if save_path:
-                plt.savefig(save_path)
-                plt.close()
-                return save_path
+            if plot_type == "interactive":
+                self._plot_interactive_chart(df, signals)
             else:
-                plt.show()
-                plt.close()
-                return None
+                self._plot_static_chart(df, signals)
+
+            if save_path:
+                plt.savefig(save_path, bbox_inches="tight", dpi=300)
+                logger.info(f"Chart saved to {save_path}")
 
         except Exception as e:
-            logger.error(f"Error creating chart: {str(e)}")
-            return None
+            logger.error(f"Error plotting trading chart: {str(e)}")
+            raise
 
-    @staticmethod
-    def calculate_trading_metrics(
-        trades: List[Dict], initial_balance: float
-    ) -> Dict[str, Union[float, int]]:
-        """Calculate trading performance metrics"""
+    def _plot_interactive_chart(
+        self, df: pd.DataFrame, signals: Optional[List[Dict]] = None
+    ) -> None:
+        """Create interactive trading chart using Plotly"""
+        # Create figure with secondary y-axis
+        fig = make_subplots(
+            rows=3,
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.03,
+            row_heights=[0.6, 0.2, 0.2],
+        )
+
+        # Add candlestick
+        fig.add_trace(
+            go.Candlestick(
+                x=df.index,
+                open=df["open"],
+                high=df["high"],
+                low=df["low"],
+                close=df["close"],
+                name="OHLC",
+            ),
+            row=1,
+            col=1,
+        )
+
+        # Add Moving Averages
+        for ma_period in [20, 50, 200]:
+            ma = df["close"].rolling(window=ma_period).mean()
+            fig.add_trace(
+                go.Scatter(x=df.index, y=ma, name=f"MA{ma_period}", line=dict(width=1)),
+                row=1,
+                col=1,
+            )
+
+        # Add Bollinger Bands
+        bb_upper, bb_middle, bb_lower = talib.BBANDS(
+            df["close"], timeperiod=20, nbdevup=2, nbdevdn=2
+        )
+
+        fig.add_trace(
+            go.Scatter(x=df.index, y=bb_upper, name="BB Upper", line=dict(dash="dash")),
+            row=1,
+            col=1,
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=bb_lower,
+                name="BB Lower",
+                line=dict(dash="dash"),
+                fill="tonexty",
+            ),
+            row=1,
+            col=1,
+        )
+
+        # Add RSI
+        fig.add_trace(go.Scatter(x=df.index, y=df["rsi"], name="RSI"), row=2, col=1)
+
+        # Add RSI levels
+        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+
+        # Add MACD
+        fig.add_trace(go.Scatter(x=df.index, y=df["macd"], name="MACD"), row=3, col=1)
+
+        fig.add_trace(
+            go.Scatter(x=df.index, y=df["macd_signal"], name="Signal"), row=3, col=1
+        )
+
+        # Add signals if provided
+        if signals:
+            for signal in signals:
+                signal_time = pd.to_datetime(signal["timestamp"])
+                if signal_time in df.index:
+                    color = "green" if signal["signal"] == "BUY" else "red"
+                    fig.add_vline(
+                        x=signal_time, line_color=color, opacity=0.5, row=1, col=1
+                    )
+
+        # Update layout
+        fig.update_layout(
+            title=f"Trading Chart - {self.current_time}",
+            yaxis_title="Price",
+            yaxis2_title="RSI",
+            yaxis3_title="MACD",
+            xaxis_rangeslider_visible=False,
+            height=800,
+        )
+
+        fig.show()
+
+    def _plot_static_chart(
+        self, df: pd.DataFrame, signals: Optional[List[Dict]] = None
+    ) -> None:
+        """Create static trading chart using mplfinance"""
+        # Prepare data for mplfinance
+        df_plot = df.copy()
+        df_plot.index.name = "Date"
+
+        # Define style
+        mc = mpf.make_marketcolors(
+            up="green",
+            down="red",
+            edge="inherit",
+            wick="inherit",
+            volume="in",
+            ohlc="inherit",
+        )
+
+        s = mpf.make_mpf_style(marketcolors=mc, gridstyle="dotted", y_on_right=False)
+
+        # Create subplots
+        fig, axlist = mpf.plot(
+            df_plot,
+            type="candle",
+            style=s,
+            volume=True,
+            figsize=(12, 8),
+            panel_ratios=(6, 2, 2),
+            addplot=self._create_indicator_subplots(df),
+            returnfig=True,
+        )
+
+        # Add signals if provided
+        if signals:
+            ax = axlist[0]
+            for signal in signals:
+                signal_time = pd.to_datetime(signal["timestamp"])
+                if signal_time in df.index:
+                    color = "green" if signal["signal"] == "BUY" else "red"
+                    ax.axvline(x=signal_time, color=color, alpha=0.5)
+
+        plt.tight_layout()
+
+    def _create_indicator_subplots(self, df: pd.DataFrame) -> List:
+        """Create technical indicator subplots for mplfinance"""
+        subplot_indicators = []
+
+        # Add Moving Averages
+        for ma_period in [20, 50, 200]:
+            ma = df["close"].rolling(window=ma_period).mean()
+            subplot_indicators.append(
+                mpf.make_addplot(ma, panel=0, color=f"C{ma_period // 20}")
+            )
+
+        # Add RSI
+        subplot_indicators.append(mpf.make_addplot(df["rsi"], panel=1, color="purple"))
+
+        # Add MACD
+        subplot_indicators.extend(
+            [
+                mpf.make_addplot(df["macd"], panel=2, color="blue"),
+                mpf.make_addplot(df["macd_signal"], panel=2, color="orange"),
+            ]
+        )
+
+        return subplot_indicators
+
+    def analyze_market_conditions(self, df: pd.DataFrame) -> Dict:
+        """Analyze current market conditions"""
         try:
-            if not trades:
-                return {}
+            analysis = {
+                "volatility": self._analyze_volatility(df),
+                "trend": self._analyze_trend(df),
+                "momentum": self._analyze_momentum(df),
+                "support_resistance": self._find_support_resistance(df),
+                "correlation": self._analyze_correlation(df),
+                "volume_analysis": self._analyze_volume(df)
+                if "volume" in df.columns
+                else None,
+            }
 
-            # Extract profits/losses
-            pnl_list = [trade["profit"] for trade in trades]
+            return analysis
 
-            # Basic metrics
-            total_trades = len(trades)
-            profitable_trades = len([p for p in pnl_list if p > 0])
-            loss_trades = len([p for p in pnl_list if p < 0])
+        except Exception as e:
+            logger.error(f"Error analyzing market conditions: {str(e)}")
+            raise
 
-            win_rate = profitable_trades / total_trades if total_trades > 0 else 0
+    def _analyze_volatility(self, df: pd.DataFrame) -> Dict:
+        """Analyze market volatility"""
+        atr = df["atr"].iloc[-1]
+        hist_vol = df["returns"].std() * np.sqrt(252)
 
-            # Profit metrics
-            total_profit = sum([p for p in pnl_list if p > 0])
-            total_loss = abs(sum([p for p in pnl_list if p < 0]))
-            net_profit = sum(pnl_list)
+        return {
+            "current_atr": atr,
+            "historical_volatility": hist_vol,
+            "volatility_regime": "high"
+            if hist_vol > df["returns"].std() * 2
+            else "normal",
+            "atr_percentile": stats.percentileofscore(df["atr"], atr),
+        }
 
-            profit_factor = (
-                total_profit / total_loss if total_loss > 0 else float("inf")
-            )
+    def _analyze_trend(self, df: pd.DataFrame) -> Dict:
+        """Analyze market trend"""
+        current_price = df["close"].iloc[-1]
+        sma_200 = df["close"].rolling(200).mean().iloc[-1]
+        adx = df["adx"].iloc[-1]
 
-            # Calculate equity curve
-            equity_curve = [initial_balance]
-            for pnl in pnl_list:
-                equity_curve.append(equity_curve[-1] + pnl)
+        return {
+            "trend_direction": "uptrend" if current_price > sma_200 else "downtrend",
+            "trend_strength": "strong" if adx > 25 else "weak",
+            "price_location": {
+                "above_200ma": current_price > sma_200,
+                "above_50ma": current_price > df["close"].rolling(50).mean().iloc[-1],
+                "above_20ma": current_price > df["close"].rolling(20).mean().iloc[-1],
+            },
+        }
 
-            # Maximum drawdown
-            running_max = np.maximum.accumulate(equity_curve)
-            drawdown = (running_max - equity_curve) / running_max
-            max_drawdown = np.max(drawdown) * 100  # as percentage
+    def _analyze_momentum(self, df: pd.DataFrame) -> Dict:
+        """Analyze market momentum"""
+        return {
+            "rsi_condition": "overbought"
+            if df["rsi"].iloc[-1] > 70
+            else "oversold"
+            if df["rsi"].iloc[-1] < 30
+            else "neutral",
+            "macd_signal": "bullish"
+            if df["macd"].iloc[-1] > df["macd_signal"].iloc[-1]
+            else "bearish",
+            "momentum_strength": abs(df["returns"].iloc[-20:].mean()) * 100,
+        }
 
-            # Risk-adjusted returns
-            returns = np.diff(equity_curve) / equity_curve[:-1]
-            sharpe_ratio = (
-                np.mean(returns) / np.std(returns) * np.sqrt(252)
-                if len(returns) > 1
-                else 0
-            )
+    def _find_support_resistance(
+        self, df: pd.DataFrame, window: int = 20, threshold: float = 0.02
+    ) -> Dict:
+        """Find support and resistance levels"""
+        highs = df["high"].rolling(window=window, center=True).max()
+        lows = df["low"].rolling(window=window, center=True).min()
+
+        resistance_levels = []
+        support_levels = []
+
+        for i in range(len(df) - window):
+            if highs.iloc[i] == df["high"].iloc[i]:
+                resistance_levels.append(df["high"].iloc[i])
+            if lows.iloc[i] == df["low"].iloc[i]:
+                support_levels.append(df["low"].iloc[i])
+
+        return {
+            "resistance_levels": sorted(set(resistance_levels[-5:])),
+            "support_levels": sorted(set(support_levels[-5:])),
+            "current_range": {
+                "upper": max(resistance_levels[-5:]),
+                "lower": min(support_levels[-5:]),
+            },
+        }
+
+    def _analyze_correlation(self, df: pd.DataFrame) -> Dict:
+        """Analyze correlations between different features"""
+        corr_matrix = df[["close", "volume", "rsi", "macd"]].corr()
+
+        return {
+            "price_volume_corr": corr_matrix.loc["close", "volume"],
+            "price_rsi_corr": corr_matrix.loc["close", "rsi"],
+            "price_macd_corr": corr_matrix.loc["close", "macd"],
+        }
+
+    def _analyze_volume(self, df: pd.DataFrame) -> Dict:
+        """Analyze volume patterns"""
+        avg_volume = df["volume"].rolling(20).mean().iloc[-1]
+        current_volume = df["volume"].iloc[-1]
+
+        return {
+            "volume_trend": "increasing"
+            if current_volume > avg_volume
+            else "decreasing",
+            "volume_strength": current_volume / avg_volume,
+            "volume_consistency": df["volume"].std() / df["volume"].mean(),
+        }
+
+    def calculate_position_size(
+        self,
+        account_balance: float,
+        risk_percentage: float,
+        entry_price: float,
+        stop_loss: float,
+        leverage: float = 100.0,
+    ) -> Dict:
+        """Calculate optimal position size"""
+        try:
+            # Calculate risk amount
+            risk_amount = account_balance * (risk_percentage / 100)
+
+            # Calculate pip value and position size
+            pip_value = 0.0001  # Adjust for JPY pairs
+            pip_risk = abs(entry_price - stop_loss) / pip_value
+
+            # Calculate position size in lots
+            position_size = risk_amount / (pip_risk * 10)  # Standard lot = 100,000
+            position_size = min(position_size, account_balance * leverage / entry_price)
 
             return {
-                "total_trades": total_trades,
-                "profitable_trades": profitable_trades,
-                "loss_trades": loss_trades,
-                "win_rate": win_rate,
-                "total_profit": total_profit,
-                "total_loss": total_loss,
-                "net_profit": net_profit,
-                "profit_factor": profit_factor,
-                "max_drawdown": max_drawdown,
-                "sharpe_ratio": sharpe_ratio,
+                "position_size_lots": position_size,
+                "position_size_units": position_size * 100000,
+                "risk_amount": risk_amount,
+                "margin_required": (position_size * 100000 * entry_price) / leverage,
             }
 
         except Exception as e:
-            logger.error(f"Error calculating metrics: {str(e)}")
-            return {}
+            logger.error(f"Error calculating position size: {str(e)}")
+            raise
 
-    @staticmethod
-    def save_trading_results(results: Dict, filename: str) -> bool:
-        """Save trading results to JSON file"""
-        try:
-            # Ensure directory exists
-            Path("results").mkdir(exist_ok=True)
-
-            filepath = Path("results") / filename
-
-            # Convert datetime objects to string
-            results_copy = results.copy()
-            for key, value in results_copy.items():
-                if isinstance(value, datetime):
-                    results_copy[key] = value.strftime("%Y-%m-%d %H:%M:%S")
-
-            with open(filepath, "w") as f:
-                json.dump(results_copy, f, indent=4)
-
-            logger.info(f"Results saved to {filepath}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Error saving results: {str(e)}")
-            return False
-
-    @staticmethod
-    def load_trading_results(filename: str) -> Optional[Dict]:
-        """Load trading results from JSON file"""
-        try:
-            filepath = Path("results") / filename
-
-            if not filepath.exists():
-                logger.error(f"Results file not found: {filepath}")
-                return None
-
-            with open(filepath, "r") as f:
-                results = json.load(f)
-
-            # Convert string dates back to datetime
-            for key, value in results.items():
-                if isinstance(value, str) and "timestamp" in key.lower():
-                    try:
-                        results[key] = datetime.strptime(
-                            value, "%Y-%m-%d %H:%M:%S"
-                        ).replace(tzinfo=timezone.utc)
-                    except ValueError:
-                        pass
-
-            return results
-
-        except Exception as e:
-            logger.error(f"Error loading results: {str(e)}")
-            return None
-
-    @staticmethod
-    def format_number(
-        number: float, decimals: int = 2, include_sign: bool = False
+    def generate_trading_summary(
+        self, trades: List[Dict], market_analysis: Dict
     ) -> str:
-        """Format number for display"""
+        """Generate human-readable trading summary"""
         try:
-            if abs(number) >= 1e6:
-                return f"{'+' if include_sign and number > 0 else ''}{number / 1e6:.{decimals}f}M"
-            elif abs(number) >= 1e3:
-                return f"{'+' if include_sign and number > 0 else ''}{number / 1e3:.{decimals}f}K"
-            else:
-                return (
-                    f"{'+' if include_sign and number > 0 else ''}{number:.{decimals}f}"
-                )
+            summary = f"""
+Trading Summary - {self.current_time}
+Generated by: {self.current_user}
+
+Market Analysis:
+---------------
+Trend: {market_analysis["trend"]["trend_direction"]} ({market_analysis["trend"]["trend_strength"]})
+Volatility: {market_analysis["volatility"]["volatility_regime"]}
+Momentum: {market_analysis["momentum"]["rsi_condition"]} (RSI), {market_analysis["momentum"]["macd_signal"]} (MACD)
+
+Recent Trades:
+-------------
+"""
+            for trade in trades[-5:]:  # Show last 5 trades
+                summary += f"""
+Time: {trade["timestamp"]}
+Type: {trade["type"]}
+Profit/Loss: {trade["pnl"]:.2f}
+Duration: {trade["duration"]}
+"""
+
+            return summary
+
         except Exception as e:
-            logger.error(f"Error formatting number: {str(e)}")
-            return str(number)
+            logger.error(f"Error generating trading summary: {str(e)}")
+            raise
