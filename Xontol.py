@@ -307,12 +307,34 @@ class ForexSignalBot:
         """Train model for a specific symbol and timeframe"""
         try:
             # Get training data
-            df = self.data_processor.get_training_data(symbol, timeframe)
-            if df is None:
+            X, y = self.data_processor.get_training_data(symbol, timeframe)
+            if len(X) == 0 or len(y) == 0:
+                logger.error(f"Failed to get training data for {symbol} {timeframe}")
+                return False
+
+            # Split data into training and validation sets
+            X_train, X_val, y_train, y_val = (
+                self.data_processor.create_train_test_split(X, y)
+            )
+            if X_train is None:
+                logger.error(f"Failed to split training data for {symbol} {timeframe}")
                 return False
 
             # Train model
-            success = self.model.train(df, symbol, timeframe)
+            success = self.model.train(
+                X_train=X_train,
+                y_train=y_train,
+                X_val=X_val,
+                y_val=y_val,
+                symbol=symbol,
+                timeframe=timeframe,
+            )
+
+            if success:
+                logger.info(f"Model training completed for {symbol} {timeframe}")
+            else:
+                logger.error(f"Model training failed for {symbol} {timeframe}")
+
             return success
 
         except Exception as e:
