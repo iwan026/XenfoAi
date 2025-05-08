@@ -178,7 +178,9 @@ class ForexSignalModel:
         try:
             # Validate input data
             if not isinstance(X, np.ndarray) or X.size == 0:
-                logger.error("Invalid input data for signal generation")
+                logger.error(
+                    f"Invalid input data for signal generation: X shape={X.shape if isinstance(X, np.ndarray) else 'None'}"
+                )
                 return None
 
             # Ensure input data type is float32
@@ -189,34 +191,17 @@ class ForexSignalModel:
                 logger.error(f"Invalid input shape: {X.shape}, expected 3 dimensions")
                 return None
 
-            # Check if enough time has passed since last signal
-            current_time = datetime.utcnow()
-            last_time = self.last_signal_time.get(f"{symbol}_{timeframe}")
-
-            if (
-                last_time
-                and (current_time - last_time).total_seconds()
-                < TradingConfig.SIGNAL_PARAMS.min_prediction_interval * 60
-            ):
-                logger.info(
-                    f"Waiting for minimum interval before new signal for {symbol}"
+            expected_features = 16  # Number of features defined in data_processor
+            if X.shape[2] != expected_features:
+                logger.error(
+                    f"Invalid number of features: {X.shape[2]}, expected {expected_features}"
                 )
                 return None
 
-            # Load model if not loaded
-            if self.model is None:
-                if not self._load_model(symbol, timeframe):
-                    return None
-
-            # Update market regime
-            self.current_market_regime = market_regime
-
             # Generate prediction
-            predictions = self.model.predict(X[-1:], verbose=0)  # Get latest prediction
+            predictions = self.model.predict(X[-1:], verbose=0)
             signal_class = np.argmax(predictions[0])
-            confidence = float(
-                predictions[0][signal_class]
-            )  # Explicit float conversion
+            confidence = float(predictions[0][signal_class])
 
             # Apply confidence threshold
             if confidence < TradingConfig.SIGNAL_PARAMS.confidence_threshold:
@@ -230,10 +215,9 @@ class ForexSignalModel:
                     else "HOLD"
                 )
 
-            # Update last signal time
-            self.last_signal_time[f"{symbol}_{timeframe}"] = current_time
-
-            return {
+            # Create signal response
+            current_time = datetime.utcnow()
+            signal = {
                 "symbol": symbol,
                 "timeframe": timeframe,
                 "signal": signal_type,
@@ -241,6 +225,11 @@ class ForexSignalModel:
                 "timestamp": current_time.strftime("%Y-%m-%d %H:%M:%S"),
                 "market_regime": market_regime,
             }
+
+            # Update last signal time
+            self.last_signal_time[f"{symbol}_{timeframe}"] = current_time
+
+            return signal
 
         except Exception as e:
             logger.error(f"Error generating signal: {str(e)}")

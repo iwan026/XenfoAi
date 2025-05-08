@@ -290,12 +290,47 @@ class ForexSignalBot:
             # Get market data
             df = self.data_processor.get_market_data(symbol, timeframe)
             if df is None:
+                logger.error(f"Failed to get market data for {symbol} {timeframe}")
                 return None
 
-            # Generate signal
-            signal = self.model.generate_signal(df, symbol, timeframe)
-            if signal is None:
+            # Prepare data for signal generation
+            X, timestamps = self.data_processor.prepare_data_for_signal(
+                df, lookback_period=TradingConfig.MODEL_PARAMS.lookback_period
+            )
+
+            if len(X) == 0:
+                logger.error(
+                    f"Failed to prepare data for signal generation for {symbol} {timeframe}"
+                )
                 return None
+
+            # Get current market regime
+            market_regime = "stable_trend"  # default
+            if df is not None and len(df) > 0:
+                market_summary = self.data_processor.get_market_summary(df)
+                market_regime = market_summary.get("market_regime", "stable_trend")
+
+            # Generate signal
+            signal = self.model.generate_signal(
+                X=X, symbol=symbol, timeframe=timeframe, market_regime=market_regime
+            )
+
+            if signal is None:
+                logger.error(f"Failed to generate signal for {symbol} {timeframe}")
+                return None
+
+            # Add additional market context
+            if market_summary:
+                signal.update(
+                    {
+                        "trend_strength": market_summary.get("trend_strength", 0),
+                        "volatility": market_summary.get("volatility", 0),
+                        "rsi": market_summary.get(
+                            "rsi", 50
+                        ),  # Default RSI middle value
+                        "adx": market_summary.get("adx", 0),
+                    }
+                )
 
             return signal
 
