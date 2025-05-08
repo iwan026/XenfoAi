@@ -74,6 +74,10 @@ class SmartMoneyFeatures:
             "volume_score",
         ]
 
+    def get_feature_names(self) -> List[str]:
+        """Get list of feature names"""
+        return self.feature_columns
+
     def calculate_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Calculate all Smart Money Concepts features

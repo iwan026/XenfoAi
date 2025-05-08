@@ -135,8 +135,8 @@ class ForexDataProcessor:
                 logger.error("tick_volume column not found")
                 return df
 
-            # Handle any NaN values in tick_volume
-            df["tick_volume"] = df["tick_volume"].fillna(method="ffill")
+            # Handle any NaN values in tick_volume using ffill()
+            df["tick_volume"] = df["tick_volume"].ffill().fillna(1.0)
 
             period = 14  # Adjustable period
 
@@ -145,7 +145,7 @@ class ForexDataProcessor:
             tick_vol_std = df["tick_volume"].rolling(window=period, min_periods=1).std()
 
             # Handle zero/NaN standard deviation
-            tick_vol_std = tick_vol_std.replace(0, 1)
+            tick_vol_std = tick_vol_std.where(tick_vol_std > 0, 1.0)
 
             # Normalize tick volume
             df["normalized_volume"] = (df["tick_volume"] - tick_vol_ma) / tick_vol_std
@@ -158,17 +158,15 @@ class ForexDataProcessor:
             )
 
             # Scale to positive values and multiply by price movement
-            price_range = (df["high"] - df["low"]).replace(
-                0, df["close"] * 0.0001
-            )  # Avoid division by zero
+            price_range = (df["high"] - df["low"]).where(
+                (df["high"] - df["low"]) > 0, df["close"] * 0.0001
+            )
             df["volume"] = (df["smoothed_volume"] - df["smoothed_volume"].min() + 1) * (
                 (df["high"] - df["low"]) / price_range
             )
 
             # Ensure volume is positive and non-zero
-            df["volume"] = df["volume"].abs()
-            min_volume = 1.0
-            df["volume"] = df["volume"].clip(lower=min_volume)
+            df["volume"] = df["volume"].abs().clip(lower=1.0)
 
             # Clean up temporary columns
             df = df.drop(["normalized_volume", "smoothed_volume"], axis=1)
@@ -178,9 +176,7 @@ class ForexDataProcessor:
         except Exception as e:
             logger.error(f"Error optimizing tick volume: {str(e)}")
             # Return DataFrame with basic volume calculation if optimization fails
-            df["volume"] = (
-                df["tick_volume"].fillna(method="ffill").abs().clip(lower=1.0)
-            )
+            df["volume"] = df["tick_volume"].ffill().fillna(1.0).abs().clip(lower=1.0)
             return df
 
     def process_market_data(self, df: pd.DataFrame) -> pd.DataFrame:
