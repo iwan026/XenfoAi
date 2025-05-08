@@ -12,21 +12,30 @@ from tensorflow.keras.layers import (
     Conv1D,
     MultiHeadAttention,
     LayerNormalization,
+    Bidirectional,
+    GRU,
 )
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+from tensorflow.keras.callbacks import (
+    EarlyStopping,
+    ModelCheckpoint,
+    ReduceLROnPlateau,
+    BackupAndRestore,
+    TensorBoard,
+)
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.regularizers import l2
+from tensorflow.keras.metrics import AUC
 import logging
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
-import joblib
+from sklearn.metrics import classification_report, confusion_matrix
 from config import TradingConfig
 
 logger = logging.getLogger(__name__)
 
 
 class ForexSignalModel:
-    """Neural network model for forex signal generation"""
+    """Enhanced neural network model for forex signal generation"""
 
     def __init__(self):
         self.model = None
@@ -34,47 +43,80 @@ class ForexSignalModel:
         self.current_market_regime = None
         self._best_weights = None
         self.last_signal_time = {}
+        self.scaler = None
+
+        # Model hyperparameters
+        self.dropout_rate = 0.4
+        self.l2_lambda = 0.02
+        self.learning_rate = 0.001
+        self.reduce_lr_factor = 0.6
+        self.early_stopping_patience = 15
+        self.reduce_lr_patience = 7
 
     def build_model(self, sequence_length: int, n_features: int) -> None:
-        """Build signal generation model architecture"""
+        """Build enhanced signal generation model architecture"""
         try:
             # Input layer
             inputs = Input(shape=(sequence_length, n_features))
 
-            # Convolutional feature extraction
-            x = Conv1D(filters=32, kernel_size=3, padding="same", activation="relu")(
-                inputs
-            )
+            # Convolutional feature extraction with increased regularization
+            x = Conv1D(
+                filters=32,
+                kernel_size=3,
+                padding="same",
+                activation="relu",
+                kernel_regularizer=l2(self.l2_lambda),
+            )(inputs)
             x = BatchNormalization()(x)
-            x = Dropout(0.2)(x)
+            x = Dropout(self.dropout_rate)(x)
 
-            # Temporal attention mechanism
-            attention = MultiHeadAttention(num_heads=4, key_dim=32)(x, x)
+            # Enhanced temporal attention mechanism
+            attention = MultiHeadAttention(
+                num_heads=8,  # Increased from 4
+                key_dim=32,
+            )(x, x)
             attention = LayerNormalization()(attention + x)
 
-            # LSTM layers
-            x = LSTM(64, return_sequences=True)(attention)
+            # Bidirectional LSTM layers with increased regularization
+            x = Bidirectional(
+                LSTM(
+                    64,
+                    return_sequences=True,
+                    kernel_regularizer=l2(self.l2_lambda),
+                    recurrent_regularizer=l2(self.l2_lambda),
+                )
+            )(attention)
             x = BatchNormalization()(x)
-            x = Dropout(0.3)(x)
+            x = Dropout(self.dropout_rate)(x)
 
-            x = LSTM(32)(x)
+            # Additional GRU layer for better temporal patterns
+            x = GRU(
+                32,
+                kernel_regularizer=l2(self.l2_lambda),
+                recurrent_regularizer=l2(self.l2_lambda),
+            )(x)
             x = BatchNormalization()(x)
-            x = Dropout(0.2)(x)
+            x = Dropout(self.dropout_rate)(x)
 
-            # Output layers - 3 classes (BUY, SELL, HOLD)
-            outputs = Dense(3, activation="softmax", kernel_regularizer=l2(0.01))(x)
+            # Output layer with stronger regularization
+            outputs = Dense(
+                3, activation="softmax", kernel_regularizer=l2(self.l2_lambda)
+            )(x)
 
-            # Create model
+            # Create and compile model
             self.model = Model(inputs=inputs, outputs=outputs)
-
-            # Compile model
             self.model.compile(
-                optimizer=Adam(learning_rate=0.001),
+                optimizer=Adam(learning_rate=self.learning_rate),
                 loss="sparse_categorical_crossentropy",
-                metrics=["accuracy"],
+                metrics=[
+                    "accuracy",
+                    AUC(name="auc"),
+                ],
             )
 
-            logger.info("Model built successfully")
+            logger.info(
+                f"Model built successfully with {self.model.count_params()} parameters"
+            )
 
         except Exception as e:
             logger.error(f"Error building model: {str(e)}")
@@ -89,58 +131,117 @@ class ForexSignalModel:
         symbol: str,
         timeframe: str,
     ) -> bool:
-        """Train the signal generation model"""
+        """Train model with enhanced features"""
         try:
             if self.model is None:
                 self.build_model(X_train.shape[1], X_train.shape[2])
 
-            # Get model directory path
-            model_dir = os.path.dirname(TradingConfig.get_model_path(symbol, timeframe))
+            # Calculate class weights
+            class_counts = np.bincount(y_train)
+            total = len(y_train)
+            class_weights = {
+                i: total / (len(class_counts) * count)
+                for i, count in enumerate(class_counts)
+            }
 
-            # Create callbacks with corrected file paths
+            # Create model directory
+            model_dir = os.path.dirname(TradingConfig.get_model_path(symbol, timeframe))
+            os.makedirs(model_dir, exist_ok=True)
+
+            # Enhanced callbacks
             callbacks = [
                 EarlyStopping(
-                    monitor="val_loss", patience=10, restore_best_weights=True
+                    monitor="val_loss",
+                    patience=self.early_stopping_patience,
+                    restore_best_weights=True,
+                    verbose=1,
                 ),
                 ReduceLROnPlateau(
-                    monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6
+                    monitor="val_loss",
+                    factor=self.reduce_lr_factor,
+                    patience=self.reduce_lr_patience,
+                    min_lr=1e-6,
+                    verbose=1,
                 ),
                 ModelCheckpoint(
                     filepath=os.path.join(model_dir, "weights.weights.h5"),
                     monitor="val_loss",
                     save_best_only=True,
                     save_weights_only=True,
+                    verbose=1,
                 ),
                 ModelCheckpoint(
                     filepath=os.path.join(model_dir, "model.h5"),
                     monitor="val_loss",
                     save_best_only=True,
-                    save_weights_only=False,  # Save full model
+                    save_weights_only=False,
+                    verbose=1,
                 ),
+                BackupAndRestore(backup_dir=os.path.join(model_dir, "backups")),
+                TensorBoard(log_dir=os.path.join(model_dir, "logs"), histogram_freq=1),
             ]
 
-            # Train model
+            # Train with enhanced parameters
             self.history = self.model.fit(
                 X_train,
                 y_train,
                 validation_data=(X_val, y_val),
                 epochs=TradingConfig.MODEL_PARAMS.epochs,
-                batch_size=TradingConfig.MODEL_PARAMS.batch_size,
+                batch_size=48,  # Increased batch size
                 callbacks=callbacks,
+                class_weight=class_weights,
+                shuffle=True,
                 verbose=1,
             )
 
             # Store best weights
             self._best_weights = self.model.get_weights()
 
-            # Save model metadata
+            # Save model metadata and evaluate
             self._save_model_metadata(symbol, timeframe)
+            self._evaluate_and_log(X_val, y_val, symbol, timeframe)
 
             return True
 
         except Exception as e:
             logger.error(f"Error training model: {str(e)}")
             return False
+
+    def _evaluate_and_log(
+        self, X_val: np.ndarray, y_val: np.ndarray, symbol: str, timeframe: str
+    ) -> None:
+        """Evaluate model and log results"""
+        try:
+            predictions = self.model.predict(X_val)
+            y_pred = np.argmax(predictions, axis=1)
+
+            # Calculate detailed metrics
+            metrics = {
+                "accuracy": float(np.mean(y_val == y_pred)),
+                "confusion_matrix": confusion_matrix(y_val, y_pred).tolist(),
+                "classification_report": classification_report(
+                    y_val,
+                    y_pred,
+                    target_names=["SELL", "BUY", "HOLD"],
+                    output_dict=True,
+                ),
+            }
+
+            # Log results
+            logger.info(f"Model evaluation for {symbol}_{timeframe}:")
+            logger.info(f"Accuracy: {metrics['accuracy']:.4f}")
+            logger.info(f"Classification Report:\n{metrics['classification_report']}")
+
+            # Save metrics
+            metrics_path = os.path.join(
+                os.path.dirname(TradingConfig.get_model_path(symbol, timeframe)),
+                "evaluation_metrics.json",
+            )
+            with open(metrics_path, "w") as f:
+                json.dump(metrics, f, indent=4)
+
+        except Exception as e:
+            logger.error(f"Error evaluating model: {str(e)}")
 
     def _save_model_metadata(self, symbol: str, timeframe: str) -> bool:
         """Save model metadata and configuration"""
