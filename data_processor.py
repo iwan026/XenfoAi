@@ -89,6 +89,18 @@ class ForexDataProcessor:
             df["time"] = pd.to_datetime(df["time"], unit="s")
             df.set_index("time", inplace=True)
 
+            # Check if volume data exists, if not create synthetic volume
+            if "volume" not in df.columns or df["volume"].isnull().any():
+                logger.warning(
+                    f"Volume data missing for {symbol}, using tick volume instead"
+                )
+                # Get tick volume if real volume is not available
+                if "tick_volume" in df.columns:
+                    df["volume"] = df["tick_volume"]
+                else:
+                    # Create synthetic volume based on price movement
+                    df["volume"] = ((df["high"] - df["low"]) * 1000).round()
+
             # Process data with new feature module
             df = self.process_market_data(df)
 
