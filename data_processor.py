@@ -89,17 +89,8 @@ class ForexDataProcessor:
             df["time"] = pd.to_datetime(df["time"], unit="s")
             df.set_index("time", inplace=True)
 
-            # Check if volume data exists, if not create synthetic volume
-            if "volume" not in df.columns or df["volume"].isnull().any():
-                logger.warning(
-                    f"Volume data missing for {symbol}, using tick volume instead"
-                )
-                # Get tick volume if real volume is not available
-                if "tick_volume" in df.columns:
-                    df["volume"] = df["tick_volume"]
-                else:
-                    # Create synthetic volume based on price movement
-                    df["volume"] = ((df["high"] - df["low"]) * 1000).round()
+            # Optimize tick volume before further processing
+            df = self.optimize_tick_volume(df)
 
             # Process data with new feature module
             df = self.process_market_data(df)
@@ -111,6 +102,52 @@ class ForexDataProcessor:
             return None
         finally:
             mt5.shutdown()
+
+    def optimize_tick_volume(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Optimize tick volume data for forex pairs"""
+        try:
+            # Use tick volume as base
+            if "tick_volume" in df.columns:
+                # Normalize tick volume using rolling statistics
+                period = 14  # Adjustable period
+
+                # Calculate rolling mean and std of tick volume
+                tick_vol_ma = df["tick_volume"].rolling(window=period).mean()
+                tick_vol_std = df["tick_volume"].rolling(window=period).std()
+
+                # Normalize tick volume
+                df["normalized_volume"] = (
+                    df["tick_volume"] - tick_vol_ma
+                ) / tick_vol_std
+
+                # Apply exponential smoothing to reduce noise
+                df["smoothed_volume"] = (
+                    df["normalized_volume"].ewm(span=period, adjust=False).mean()
+                )
+
+                # Scale to positive values and multiply by price movement
+                df["optimized_volume"] = (
+                    df["smoothed_volume"] - df["smoothed_volume"].min() + 1
+                ) * ((df["high"] - df["low"]) / df["close"])
+
+                # Replace volume with optimized tick volume
+                df["volume"] = df["optimized_volume"]
+
+                # Cleanup temporary columns
+                df = df.drop(
+                    ["normalized_volume", "smoothed_volume", "optimized_volume"], axis=1
+                )
+
+            else:
+                logger.warning("Tick volume data not available, using synthetic volume")
+                # Create synthetic volume based on price movement if no tick volume
+                df["volume"] = ((df["high"] - df["low"]) * 1000).round()
+
+            return df
+
+        except Exception as e:
+            logger.error(f"Error optimizing tick volume: {str(e)}")
+            return df
 
     def process_market_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Process market data with all features"""
