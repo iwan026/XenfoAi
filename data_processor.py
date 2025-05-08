@@ -9,6 +9,15 @@ from datetime import datetime, timedelta
 from typing import Tuple, Optional, List, Dict
 from dataclasses import dataclass
 import ta
+from features import (
+    FeatureCalculator,
+    SmartMoneyFeatures,
+    OrderBlockAnalyzer,
+    VolumeProfileAnalyzer,
+    MarketStructureAnalyzer,
+    LiquidityAnalyzer,
+    FeatureUtils,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +37,18 @@ class ForexDataProcessor:
 
     def __init__(self):
         self.price_scaler = RobustScaler()
+        self.feature_calculator = FeatureCalculator()
+        self.utils = FeatureUtils()
         self.is_fitted = False
         self.market_condition = None
+        self.feature_columns = []
+
+        # Initialize feature processors
+        self.smc = SmartMoneyFeatures()
+        self.order_blocks = OrderBlockAnalyzer()
+        self.volume_profile = VolumeProfileAnalyzer()
+        self.market_structure = MarketStructureAnalyzer()
+        self.liquidity = LiquidityAnalyzer()
 
     def get_market_data(
         self, symbol: str, timeframe: str, num_candles: int = 1000
@@ -70,7 +89,7 @@ class ForexDataProcessor:
             df["time"] = pd.to_datetime(df["time"], unit="s")
             df.set_index("time", inplace=True)
 
-            # Process data
+            # Process data with new feature module
             df = self.process_market_data(df)
 
             return df
@@ -81,53 +100,41 @@ class ForexDataProcessor:
         finally:
             mt5.shutdown()
 
-    def get_training_data(
-        self,
-        symbol: str,
-        timeframe: str,
-        lookback_period: int = 60,
-        training_days: int = 365,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """Get and prepare data for model training"""
+    def process_market_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process market data with all features"""
         try:
-            # Calculate number of candles needed
-            candles_per_day = {
-                "M1": 1440,
-                "M5": 288,
-                "M15": 96,
-                "M30": 48,
-                "H1": 24,
-                "H4": 6,
-                "D1": 1,
-            }
-            num_candles = candles_per_day.get(timeframe, 24) * training_days
+            # Validate input data
+            if not self.utils.validate_dataframe(
+                df, ["open", "high", "low", "close", "volume"]
+            ):
+                raise ValueError("Missing required columns in input data")
 
-            # Get historical data
-            df = self.get_market_data(symbol, timeframe, num_candles)
-            if df is None:
-                logger.error(f"Failed to get market data for {symbol} {timeframe}")
-                return np.array([]), np.array([])
+            # Calculate all features using FeatureCalculator
+            df = self.feature_calculator.calculate_all_features(df)
 
-            # Prepare training data
-            X, y = self.prepare_training_data(df, lookback_period)
+            # Update feature columns
+            self.feature_columns = self.feature_calculator.get_feature_names()
 
-            if len(X) == 0 or len(y) == 0:
-                logger.error(
-                    f"Failed to prepare training data for {symbol} {timeframe}"
-                )
-                return np.array([]), np.array([])
+            # Calculate additional technical indicators
+            df = self._add_technical_indicators(df)
 
-            logger.info(
-                f"Successfully prepared training data: X shape {X.shape}, y shape {y.shape}"
-            )
-            return X, y
+            # Add market regime features
+            df = self._add_market_regime_features(df)
+
+            # Clean up NaN values
+            df = df.dropna()
+
+            # Update market condition
+            self._update_market_condition(df)
+
+            return df
 
         except Exception as e:
-            logger.error(f"Error getting training data: {str(e)}")
-            return np.array([]), np.array([])
+            logger.error(f"Error processing market data: {str(e)}")
+            return df
 
-    def process_market_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Process market data with technical indicators"""
+    def _add_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add basic technical indicators"""
         try:
             # Basic price features
             df["returns"] = df["close"].pct_change()
@@ -136,11 +143,11 @@ class ForexDataProcessor:
 
             # Trend indicators
             for period in [10, 20, 50]:
-                df[f"sma_{period}"] = df["close"].rolling(window=period).mean()
-                df[f"ema_{period}"] = df["close"].ewm(span=period).mean()
+                df[f"sma_{period}"] = ta.trend.sma_indicator(df["close"], period)
+                df[f"ema_{period}"] = ta.trend.ema_indicator(df["close"], period)
 
             # Momentum indicators
-            df["rsi"] = ta.momentum.rsi(df["close"], window=14)
+            df["rsi"] = ta.momentum.rsi(df["close"])
             df["stoch_k"] = ta.momentum.stoch(df["high"], df["low"], df["close"])
             df["stoch_d"] = ta.momentum.stoch_signal(df["high"], df["low"], df["close"])
             df["cci"] = ta.trend.cci(df["high"], df["low"], df["close"])
@@ -158,48 +165,10 @@ class ForexDataProcessor:
                 df["high"], df["low"], df["close"]
             )
 
-            # Market regime features
-            df = self._add_market_regime_features(df)
-
-            # Original processing
-            df = super().process_market_data(df)
-
-            # Add Smart Money Concepts features (from previous implementation)
-            df = self.add_smart_money_features(df)
-
-            # Add Order Block features (from previous implementation)
-            df = self.add_order_block_features(df)
-
-            # Add new features
-            df = self.add_volume_profile_features(df)
-            df = self.add_market_structure_features(df)
-            df = self.add_liquidity_analysis(df)
-
-            # Add new features to feature columns
-            self.feature_columns.extend(
-                [
-                    "poc_strength",
-                    "in_value_area",
-                    "cumulative_delta",
-                    "structure_quality",
-                    "breakout_strength",
-                    "trend_validated",
-                    "liquidity_sweep_up",
-                    "liquidity_sweep_down",
-                    "manipulation_zone",
-                ]
-            )
-
-            # Clean up NaN values
-            df = df.dropna()
-
-            # Update market condition
-            self._update_market_condition(df)
-
             return df
 
         except Exception as e:
-            logger.error(f"Error processing market data: {str(e)}")
+            logger.error(f"Error adding technical indicators: {str(e)}")
             return df
 
     def _add_market_regime_features(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -256,30 +225,80 @@ class ForexDataProcessor:
         except Exception as e:
             logger.error(f"Error updating market condition: {str(e)}")
 
+    def get_training_data(
+        self,
+        symbol: str,
+        timeframe: str,
+        lookback_period: int = 60,
+        training_days: int = 365,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Get and prepare data for model training"""
+        try:
+            # Calculate number of candles needed
+            candles_per_day = {
+                "M1": 1440,
+                "M5": 288,
+                "M15": 96,
+                "M30": 48,
+                "H1": 24,
+                "H4": 6,
+                "D1": 1,
+            }
+            num_candles = candles_per_day.get(timeframe, 24) * training_days
+
+            # Get historical data
+            df = self.get_market_data(symbol, timeframe, num_candles)
+            if df is None:
+                logger.error(f"Failed to get market data for {symbol} {timeframe}")
+                return np.array([]), np.array([])
+
+            # Prepare training data
+            X, y = self.prepare_training_data(df, lookback_period)
+
+            if len(X) == 0 or len(y) == 0:
+                logger.error(
+                    f"Failed to prepare training data for {symbol} {timeframe}"
+                )
+                return np.array([]), np.array([])
+
+            logger.info(
+                f"Successfully prepared training data: X shape {X.shape}, y shape {y.shape}"
+            )
+            return X, y
+
+        except Exception as e:
+            logger.error(f"Error getting training data: {str(e)}")
+            return np.array([]), np.array([])
+
     def prepare_data_for_signal(
         self, df: pd.DataFrame, lookback_period: int = 60
     ) -> Tuple[np.ndarray, List[datetime]]:
         """Prepare data for signal generation"""
         try:
-            # Prepare feature columns
-            feature_columns = [
-                "returns",
-                "volatility",
-                "rsi",
-                "stoch_k",
-                "stoch_d",
-                "cci",
-                "adx",
-                "macd",
-                "atr",
-                "bb_width",
-                "sma_10",
-                "sma_20",
-                "sma_50",
-                "ema_10",
-                "ema_20",
-                "ema_50",
-            ]
+            # Get all feature names from feature calculator
+            feature_columns = self.feature_calculator.get_feature_names()
+
+            # Add technical indicator columns
+            feature_columns.extend(
+                [
+                    "returns",
+                    "volatility",
+                    "rsi",
+                    "stoch_k",
+                    "stoch_d",
+                    "cci",
+                    "adx",
+                    "macd",
+                    "atr",
+                    "bb_width",
+                    "sma_10",
+                    "sma_20",
+                    "sma_50",
+                    "ema_10",
+                    "ema_20",
+                    "ema_50",
+                ]
+            )
 
             # Ensure all features are numeric
             for col in feature_columns:
@@ -299,10 +318,9 @@ class ForexDataProcessor:
             sequences = []
             timestamps = []
 
-            # Adjust range to ensure alignment with target
             for i in range(len(scaled_data) - lookback_period):
                 seq = scaled_data[i : (i + lookback_period)]
-                if len(seq) == lookback_period:  # Verify sequence length
+                if len(seq) == lookback_period:
                     sequences.append(seq)
                     timestamps.append(df.index[i + lookback_period])
 
@@ -334,9 +352,9 @@ class ForexDataProcessor:
                 np.where(
                     df["future_returns"] < -0.001,
                     0,  # SELL
-                    2,
+                    2,  # HOLD
                 ),
-            )  # HOLD
+            )
 
             # Remove NaN values from target that occur due to shift operation
             df = df.iloc[:-3].copy()
@@ -399,14 +417,20 @@ class ForexDataProcessor:
         try:
             latest = df.iloc[-1]
 
-            return {
+            # Get feature snapshots
+            feature_snapshot = self.feature_calculator.get_feature_snapshot(df)
+
+            summary = {
                 "timestamp": latest.name.strftime("%Y-%m-%d %H:%M:%S"),
                 "market_regime": latest["market_regime"],
                 "trend_strength": latest["trend_strength"],
                 "volatility": latest["volatility"],
                 "rsi": latest["rsi"],
                 "adx": latest["adx"],
+                "features": feature_snapshot,
             }
+
+            return summary
 
         except Exception as e:
             logger.error(f"Error getting market summary: {str(e)}")
