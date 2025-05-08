@@ -256,39 +256,36 @@ class ForexDataProcessor:
             for col in feature_columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
-            # Handle missing values using modern methods
-            df = df.ffill().bfill()  # Forward fill then backward fill
+            # Handle missing values
+            df = df.ffill().bfill()
 
-            # Extract features and convert to float32
+            # Extract and scale features
             features_df = df[feature_columns].astype(np.float32)
-
-            # Scale features
             if not self.is_fitted:
                 self.price_scaler.fit(features_df)
                 self.is_fitted = True
-
             scaled_data = self.price_scaler.transform(features_df)
 
             # Create sequences
-            X = []
+            sequences = []
             timestamps = []
 
-            if len(scaled_data) >= lookback_period:
-                for i in range(len(scaled_data) - lookback_period + 1):
-                    sequence = scaled_data[i : (i + lookback_period)]
-                    if len(sequence) == lookback_period:
-                        X.append(sequence)
-                        timestamps.append(df.index[i + lookback_period - 1])
+            # Adjust range to ensure alignment with target
+            for i in range(len(scaled_data) - lookback_period):
+                seq = scaled_data[i : (i + lookback_period)]
+                if len(seq) == lookback_period:  # Verify sequence length
+                    sequences.append(seq)
+                    timestamps.append(df.index[i + lookback_period])
 
-            # Convert to numpy array with explicit type
-            X = np.array(X, dtype=np.float32)
+            # Convert to numpy array
+            X = np.array(sequences, dtype=np.float32)
 
             # Validate output
             if len(X) == 0:
-                logger.warning("No valid sequences could be created")
+                logger.warning("No valid sequences created")
                 return np.array([], dtype=np.float32), []
 
-            logger.info(f"Prepared data shape: {X.shape}, dtype: {X.dtype}")
+            logger.debug(f"Prepared sequences shape: {X.shape}")
             return X, timestamps
 
         except Exception as e:
@@ -312,11 +309,39 @@ class ForexDataProcessor:
                 ),
             )  # HOLD
 
-            # Prepare sequences
-            X, _ = self.prepare_data_for_signal(df, lookback_period)
+            # Remove NaN values from target that occur due to shift operation
+            df = df.iloc[:-3].copy()
+
+            # Prepare feature sequences
+            X, timestamps = self.prepare_data_for_signal(df, lookback_period)
+            if len(X) == 0:
+                logger.error("Failed to create feature sequences")
+                return np.array([]), np.array([])
+
+            # Create target array aligned with feature sequences
             y = df["target"].values[lookback_period:]
 
-            return X, y
+            # Final validation of shapes
+            if len(X) != len(y):
+                logger.error(f"Shape mismatch: X: {X.shape}, y: {len(y)}")
+                if len(X) > len(y):
+                    X = X[: len(y)]
+                else:
+                    y = y[: len(X)]
+
+            # Additional sanity checks
+            if len(X) == 0 or len(y) == 0:
+                logger.error("Empty arrays after preparation")
+                return np.array([]), np.array([])
+
+            if not np.any(np.isnan(X)) and not np.any(np.isnan(y)):
+                logger.info(
+                    f"Successfully prepared training data: X shape {X.shape}, y shape {y.shape}"
+                )
+                return X, y
+            else:
+                logger.error("NaN values detected in prepared data")
+                return np.array([]), np.array([])
 
         except Exception as e:
             logger.error(f"Error preparing training data: {str(e)}")
