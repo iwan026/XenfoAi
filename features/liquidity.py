@@ -202,25 +202,33 @@ class LiquidityAnalyzer:
             return df
 
     def _analyze_order_flow(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Analyze order flow imbalance"""
+        """Analyze order flow with optimized tick volume"""
         try:
             window = self.params.flow_window
 
             # Calculate buying and selling pressure
-            df["buy_volume"] = np.where(df["close"] > df["open"], df["volume"], 0)
+            df["buy_volume"] = np.where(
+                df["close"] > df["open"],
+                df["volume"] * ((df["close"] - df["open"]) / (df["high"] - df["low"])),
+                0,
+            )
 
-            df["sell_volume"] = np.where(df["close"] < df["open"], df["volume"], 0)
+            df["sell_volume"] = np.where(
+                df["close"] < df["open"],
+                df["volume"] * ((df["open"] - df["close"]) / (df["high"] - df["low"])),
+                0,
+            )
 
             # Calculate cumulative pressures
-            df["buy_pressure"] = (
-                df["buy_volume"].rolling(window).sum()
-                / df["volume"].rolling(window).sum()
-            )
+            price_impact = (df["high"] - df["low"]) / df["close"]
 
-            df["sell_pressure"] = (
-                df["sell_volume"].rolling(window).sum()
-                / df["volume"].rolling(window).sum()
-            )
+            df["buy_pressure"] = (df["buy_volume"] * price_impact).rolling(
+                window
+            ).sum() / (df["volume"] * price_impact).rolling(window).sum()
+
+            df["sell_pressure"] = (df["sell_volume"] * price_impact).rolling(
+                window
+            ).sum() / (df["volume"] * price_impact).rolling(window).sum()
 
             # Calculate flow imbalance
             df["flow_imbalance"] = abs(df["buy_pressure"] - df["sell_pressure"])

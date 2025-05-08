@@ -127,36 +127,32 @@ class OrderBlockAnalyzer:
         """Detect Bullish and Bearish Order Blocks"""
         try:
             # Calculate volume moving average
-            df["volume_ma"] = df["volume"].rolling(self.params.lookback_period).mean()
+            price_volatility = (df["high"] - df["low"]) / df["close"]
+            weighted_volume = df["volume"] * price_volatility
+
+            df["volume_ma"] = weighted_volume.rolling(
+                self.params.lookback_period
+            ).mean()
 
             # Bullish Order Blocks
             df["bull_ob"] = (
                 (df["close"] < df["open"])  # Bearish candle
                 & (df["close"].shift(-1) > df["high"])  # Break of high
                 & (
-                    df["volume"] > df["volume_ma"] * self.params.volume_threshold
+                    weighted_volume > df["volume_ma"] * self.params.volume_threshold
                 )  # High volume
-                & (
-                    abs(df["close"] - df["open"]) > df["atr"] * self.params.min_ob_size
-                )  # Minimum size
-                & (
-                    abs(df["close"] - df["open"]) < df["atr"] * self.params.max_ob_size
-                )  # Maximum size
+                & (abs(df["close"] - df["open"]) > df["atr"] * self.params.min_ob_size)
+                & (abs(df["close"] - df["open"]) < df["atr"] * self.params.max_ob_size)
             )
 
-            # Bearish Order Blocks
             df["bear_ob"] = (
                 (df["close"] > df["open"])  # Bullish candle
                 & (df["close"].shift(-1) < df["low"])  # Break of low
                 & (
-                    df["volume"] > df["volume_ma"] * self.params.volume_threshold
+                    weighted_volume > df["volume_ma"] * self.params.volume_threshold
                 )  # High volume
-                & (
-                    abs(df["close"] - df["open"]) > df["atr"] * self.params.min_ob_size
-                )  # Minimum size
-                & (
-                    abs(df["close"] - df["open"]) < df["atr"] * self.params.max_ob_size
-                )  # Maximum size
+                & (abs(df["close"] - df["open"]) > df["atr"] * self.params.min_ob_size)
+                & (abs(df["close"] - df["open"]) < df["atr"] * self.params.max_ob_size)
             )
 
             # Calculate Order Block size

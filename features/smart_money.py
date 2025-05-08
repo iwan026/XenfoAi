@@ -181,7 +181,11 @@ class SmartMoneyFeatures:
             df["typical_price"] = (df["high"] + df["low"] + df["close"]) / 3
 
             # Calculate money flow
-            df["money_flow"] = df["typical_price"] * df["volume"]
+            df["money_flow"] = (
+                df["typical_price"]
+                * df["volume"]
+                * ((df["close"] - df["open"]) / (df["high"] - df["low"]))
+            )
 
             # Calculate positive and negative money flow
             df["positive_flow"] = np.where(

@@ -174,27 +174,31 @@ class VolumeProfileAnalyzer:
             return df
 
     def _calculate_volume_delta(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate Volume Delta metrics"""
+        """Calculate Volume Delta metrics using optimized tick volume"""
         try:
             # Calculate buying and selling volume
-            df["buy_volume"] = np.where(df["close"] > df["open"], df["volume"], 0)
+            df["buy_volume"] = np.where(
+                df["close"] > df["open"],
+                df["volume"] * (df["close"] - df["open"]) / (df["high"] - df["low"]),
+                0,
+            )
 
-            df["sell_volume"] = np.where(df["close"] < df["open"], df["volume"], 0)
+            df["sell_volume"] = np.where(
+                df["close"] < df["open"],
+                df["volume"] * (df["open"] - df["close"]) / (df["high"] - df["low"]),
+                0,
+            )
 
-            # Calculate delta
+            # Calculate delta with price impact
             df["volume_delta"] = (
                 df["buy_volume"].rolling(self.params.delta_period).sum()
                 - df["sell_volume"].rolling(self.params.delta_period).sum()
             ) / df["volume"].rolling(self.params.delta_period).sum()
 
-            # Calculate delta strength
-            df["delta_strength"] = abs(df["volume_delta"])
-
-            # Calculate cumulative delta
-            df["cumulative_delta"] = df["volume_delta"].cumsum()
-
-            # Clean up
-            df = df.drop(["buy_volume", "sell_volume"], axis=1)
+            # Calculate delta strength considering price movement
+            df["delta_strength"] = abs(df["volume_delta"]) * (
+                (df["high"] - df["low"]) / df["close"]
+            )
 
             return df
 
