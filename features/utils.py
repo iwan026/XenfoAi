@@ -3,7 +3,7 @@ import pandas as pd
 import logging
 from typing import Dict, List, Optional, Tuple, Union
 from datetime import datetime, timezone
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from config import TradingConfig
