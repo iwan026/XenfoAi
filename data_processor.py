@@ -81,6 +81,51 @@ class ForexDataProcessor:
         finally:
             mt5.shutdown()
 
+    def get_training_data(
+        self,
+        symbol: str,
+        timeframe: str,
+        lookback_period: int = 60,
+        training_days: int = 365,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Get and prepare data for model training"""
+        try:
+            # Calculate number of candles needed
+            candles_per_day = {
+                "M1": 1440,
+                "M5": 288,
+                "M15": 96,
+                "M30": 48,
+                "H1": 24,
+                "H4": 6,
+                "D1": 1,
+            }
+            num_candles = candles_per_day.get(timeframe, 24) * training_days
+
+            # Get historical data
+            df = self.get_market_data(symbol, timeframe, num_candles)
+            if df is None:
+                logger.error(f"Failed to get market data for {symbol} {timeframe}")
+                return np.array([]), np.array([])
+
+            # Prepare training data
+            X, y = self.prepare_training_data(df, lookback_period)
+
+            if len(X) == 0 or len(y) == 0:
+                logger.error(
+                    f"Failed to prepare training data for {symbol} {timeframe}"
+                )
+                return np.array([]), np.array([])
+
+            logger.info(
+                f"Successfully prepared training data: X shape {X.shape}, y shape {y.shape}"
+            )
+            return X, y
+
+        except Exception as e:
+            logger.error(f"Error getting training data: {str(e)}")
+            return np.array([]), np.array([])
+
     def process_market_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Process market data with technical indicators"""
         try:
