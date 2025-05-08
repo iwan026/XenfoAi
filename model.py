@@ -198,10 +198,29 @@ class ForexSignalModel:
                 )
                 return None
 
+            # Load or build model if needed
+            if self.model is None:
+                if not self._load_model(symbol, timeframe):
+                    logger.error(f"Failed to load model for {symbol}_{timeframe}")
+                    # Try building new model
+                    try:
+                        self.build_model(X.shape[1], X.shape[2])
+                    except Exception as e:
+                        logger.error(f"Failed to build new model: {str(e)}")
+                        return None
+
+            if self.model is None:
+                logger.error("Model initialization failed")
+                return None
+
             # Generate prediction
-            predictions = self.model.predict(X[-1:], verbose=0)
-            signal_class = np.argmax(predictions[0])
-            confidence = float(predictions[0][signal_class])
+            try:
+                predictions = self.model.predict(X[-1:], verbose=0)
+                signal_class = np.argmax(predictions[0])
+                confidence = float(predictions[0][signal_class])
+            except Exception as e:
+                logger.error(f"Prediction error: {str(e)}")
+                return None
 
             # Apply confidence threshold
             if confidence < TradingConfig.SIGNAL_PARAMS.confidence_threshold:

@@ -252,10 +252,12 @@ class ForexDataProcessor:
                 "ema_50",
             ]
 
-            # Ensure all features are numeric and handle missing values
+            # Ensure all features are numeric
             for col in feature_columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
-            df = df.fillna(method="ffill").fillna(method="bfill")
+
+            # Handle missing values using modern methods
+            df = df.ffill().bfill()  # Forward fill then backward fill
 
             # Extract features and convert to float32
             features_df = df[feature_columns].astype(np.float32)
@@ -271,11 +273,10 @@ class ForexDataProcessor:
             X = []
             timestamps = []
 
-            # Ensure we have enough data for lookback
             if len(scaled_data) >= lookback_period:
                 for i in range(len(scaled_data) - lookback_period + 1):
                     sequence = scaled_data[i : (i + lookback_period)]
-                    if len(sequence) == lookback_period:  # Verify sequence length
+                    if len(sequence) == lookback_period:
                         X.append(sequence)
                         timestamps.append(df.index[i + lookback_period - 1])
 
@@ -287,7 +288,7 @@ class ForexDataProcessor:
                 logger.warning("No valid sequences could be created")
                 return np.array([], dtype=np.float32), []
 
-            logger.debug(f"Prepared data shape: {X.shape}, dtype: {X.dtype}")
+            logger.info(f"Prepared data shape: {X.shape}, dtype: {X.dtype}")
             return X, timestamps
 
         except Exception as e:
