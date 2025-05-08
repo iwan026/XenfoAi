@@ -2,76 +2,108 @@ import numpy as np
 import pandas as pd
 import logging
 from typing import Dict, List, Optional, Tuple
+from datetime import datetime, timezone
 from dataclasses import dataclass
+from pathlib import Path
+
+from config import TradingConfig
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class OrderBlockFeatures:
-    """Container for Order Block features"""
+class OrderBlockParameters:
+    """Parameters for Order Block detection and analysis"""
 
-    bull_ob: bool
-    bear_ob: bool
-    ob_strength: float
-    ob_volume_ratio: float
-    ob_momentum: float
-    ob_quality: float
-    reversal_zone: bool
-    ob_retest: bool
-    ob_distance: float
-    ob_confirmation: bool
+    # Order Block Detection
+    min_ob_size: float = 0.001  # Minimum size relative to ATR
+    max_ob_size: float = 0.05  # Maximum size relative to ATR
+    lookback_period: int = 20  # Periods to look back
+    volume_threshold: float = 1.5  # Volume multiplier for significance
+
+    # Break of Structure
+    bos_threshold: float = 0.002  # Minimum break size
+    bos_confirmation: int = 3  # Candles for confirmation
+
+    # Mitigation
+    mitigation_threshold: float = 0.7  # Percentage for mitigation
+    partial_mitigation: float = 0.5  # Threshold for partial mitigation
+
+    # Strength Analysis
+    volume_weight: float = 0.4  # Weight for volume component
+    size_weight: float = 0.3  # Weight for size component
+    time_weight: float = 0.3  # Weight for recency component
 
 
 class OrderBlockAnalyzer:
-    """Enhanced Order Block feature generator"""
+    """Main class for Order Block detection and analysis"""
 
-    def __init__(self):
-        self.feature_columns = []
-        self.lookback_period = 20
-        self.volume_threshold = 1.5
-        self.atr_multiplier = 1.2
-        self.min_ob_size = 0.5
+    def __init__(self, params: Optional[OrderBlockParameters] = None):
+        """Initialize Order Block analyzer with parameters"""
+        self.params = params or OrderBlockParameters()
+        self.feature_columns: List[str] = []
+        self._initialize_feature_columns()
+
+        self.metadata = {
+            "version": TradingConfig.VERSION,
+            "created_at": TradingConfig.get_current_timestamp(),
+            "created_by": TradingConfig.AUTHOR,
+        }
+
+    def _initialize_feature_columns(self) -> None:
+        """Initialize list of feature column names"""
+        self.feature_columns = [
+            # Order Block Detection
+            "bull_ob",
+            "bear_ob",
+            "ob_size",
+            "ob_volume_ratio",
+            # Break of Structure
+            "bos_up",
+            "bos_down",
+            "bos_strength",
+            # Mitigation
+            "ob_mitigation",
+            "mitigation_type",
+            # Strength Analysis
+            "ob_strength",
+            "ob_quality",
+            "ob_age",
+        ]
 
     def calculate_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate comprehensive Order Block features"""
+        """
+        Calculate all Order Block related features
+
+        Args:
+            df: DataFrame with OHLCV data
+
+        Returns:
+            DataFrame with additional Order Block features
+        """
         try:
-            # Validate input data
-            if df.empty or not all(
-                col in df.columns
-                for col in ["open", "high", "low", "close", "volume", "atr"]
-            ):
-                logger.error("Missing required columns in input data")
-                return df
+            # Validate input
+            required_columns = ["open", "high", "low", "close", "volume"]
+            if not all(col in df.columns for col in required_columns):
+                raise ValueError("Missing required columns in input DataFrame")
 
-            # Basic Order Block Detection
+            # Create copy to prevent modifications to original
+            df = df.copy()
+
+            # Calculate ATR for relative size measurements
+            df["atr"] = self._calculate_atr(df)
+
+            # Calculate main features
             df = self._detect_order_blocks(df)
+            df = self._analyze_break_of_structure(df)
+            df = self._track_mitigation(df)
+            df = self._calculate_strength(df)
 
-            # Order Block Strength and Quality
-            df = self._calculate_ob_metrics(df)
+            # Clean up temporary columns
+            df = df.drop(["atr"], axis=1)
 
-            # Order Block Context
-            df = self._analyze_ob_context(df)
-
-            # Order Block Validation
-            df = self._validate_order_blocks(df)
-
-            # Update feature columns list
-            self.feature_columns = [
-                "bull_ob",
-                "bear_ob",
-                "ob_strength",
-                "ob_volume_ratio",
-                "ob_momentum",
-                "ob_quality",
-                "reversal_zone",
-                "ob_retest",
-                "ob_distance",
-                "ob_confirmation",
-            ]
-
-            # Validate calculated features
-            df = self._validate_features(df)
+            # Log calculation metadata
+            self._log_calculation(df)
 
             return df
 
@@ -79,226 +111,224 @@ class OrderBlockAnalyzer:
             logger.error(f"Error calculating Order Block features: {str(e)}")
             return df
 
+    def _calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
+        """Calculate Average True Range"""
+        try:
+            tr1 = df["high"] - df["low"]
+            tr2 = abs(df["high"] - df["close"].shift(1))
+            tr3 = abs(df["low"] - df["close"].shift(1))
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            return tr.rolling(period).mean()
+        except Exception as e:
+            logger.error(f"Error calculating ATR: {str(e)}")
+            return pd.Series(0, index=df.index)
+
     def _detect_order_blocks(self, df: pd.DataFrame) -> pd.DataFrame:
         """Detect Bullish and Bearish Order Blocks"""
         try:
-            # Bullish Order Block
+            # Calculate volume moving average
+            df["volume_ma"] = df["volume"].rolling(self.params.lookback_period).mean()
+
+            # Bullish Order Blocks
             df["bull_ob"] = (
                 (df["close"] < df["open"])  # Bearish candle
-                & (df["close"].shift(-1) > df["high"])  # Next candle breaks high
+                & (df["close"].shift(-1) > df["high"])  # Break of high
                 & (
-                    df["volume"]
-                    > df["volume"].rolling(self.lookback_period).mean()
-                    * self.volume_threshold
+                    df["volume"] > df["volume_ma"] * self.params.volume_threshold
                 )  # High volume
                 & (
-                    abs(df["close"] - df["open"]) > df["atr"] * self.min_ob_size
-                )  # Significant size
+                    abs(df["close"] - df["open"]) > df["atr"] * self.params.min_ob_size
+                )  # Minimum size
+                & (
+                    abs(df["close"] - df["open"]) < df["atr"] * self.params.max_ob_size
+                )  # Maximum size
             )
 
-            # Bearish Order Block
+            # Bearish Order Blocks
             df["bear_ob"] = (
                 (df["close"] > df["open"])  # Bullish candle
-                & (df["close"].shift(-1) < df["low"])  # Next candle breaks low
+                & (df["close"].shift(-1) < df["low"])  # Break of low
                 & (
-                    df["volume"]
-                    > df["volume"].rolling(self.lookback_period).mean()
-                    * self.volume_threshold
+                    df["volume"] > df["volume_ma"] * self.params.volume_threshold
                 )  # High volume
                 & (
-                    abs(df["close"] - df["open"]) > df["atr"] * self.min_ob_size
-                )  # Significant size
-            )
-
-            return df
-
-        except Exception as e:
-            logger.error(f"Error detecting order blocks: {str(e)}")
-            return df
-
-    def _calculate_ob_metrics(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate Order Block strength and related metrics"""
-        try:
-            # Order Block Strength
-            df["ob_strength"] = np.where(
-                df["bull_ob"],
-                (df["high"].shift(-1) - df["low"]) / df["atr"],
-                np.where(
-                    df["bear_ob"], (df["high"] - df["low"].shift(-1)) / df["atr"], 0
-                ),
-            )
-
-            # Volume Ratio
-            df["ob_volume_ratio"] = (
-                df["volume"] / df["volume"].rolling(self.lookback_period).mean()
-            )
-
-            # Momentum
-            df["ob_momentum"] = np.where(
-                df["bull_ob"] | df["bear_ob"],
-                abs(df["close"] - df["open"]) * df["ob_volume_ratio"],
-                0,
-            )
-
-            # Quality Score
-            df["ob_quality"] = np.where(
-                df["bull_ob"] | df["bear_ob"],
-                (
-                    df["ob_strength"] * 0.4
-                    + df["ob_volume_ratio"] * 0.3
-                    + df["ob_momentum"] * 0.3
-                ),
-                0,
-            )
-
-            return df
-
-        except Exception as e:
-            logger.error(f"Error calculating OB metrics: {str(e)}")
-            return df
-
-    def _analyze_ob_context(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Analyze Order Block context and market conditions"""
-        try:
-            # Reversal Zone Detection
-            df["reversal_zone"] = (
-                (df["bull_ob"])
+                    abs(df["close"] - df["open"]) > df["atr"] * self.params.min_ob_size
+                )  # Minimum size
                 & (
-                    df["close"].rolling(self.lookback_period).min().shift(1)
-                    == df["close"].shift(1)
-                )
-            ) | (
-                (df["bear_ob"])
-                & (
-                    df["close"].rolling(self.lookback_period).max().shift(1)
-                    == df["close"].shift(1)
-                )
+                    abs(df["close"] - df["open"]) < df["atr"] * self.params.max_ob_size
+                )  # Maximum size
             )
 
-            # Order Block Retest
-            df["ob_retest"] = self._detect_retests(df)
+            # Calculate Order Block size
+            df["ob_size"] = abs(df["close"] - df["open"]) / df["atr"]
 
-            # Distance from Order Block
-            df["ob_distance"] = self._calculate_ob_distance(df)
+            # Calculate volume ratio
+            df["ob_volume_ratio"] = df["volume"] / df["volume_ma"]
 
-            # Order Block Confirmation
-            df["ob_confirmation"] = (
-                (df["ob_quality"] > 0.7)
-                & (df["ob_volume_ratio"] > self.volume_threshold)
-                & (df["ob_strength"] > 1.0)
-            )
+            # Clean up
+            df = df.drop(["volume_ma"], axis=1)
 
             return df
 
         except Exception as e:
-            logger.error(f"Error analyzing OB context: {str(e)}")
+            logger.error(f"Error detecting Order Blocks: {str(e)}")
             return df
 
-    def _detect_retests(self, df: pd.DataFrame) -> pd.Series:
-        """Detect Order Block retests"""
+    def _analyze_break_of_structure(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Analyze breaks of market structure"""
         try:
-            return (
-                (df["bull_ob"].shift(1))
-                & (df["low"] <= df["low"].shift(1))
+            # Calculate local highs and lows
+            df["local_high"] = df["high"].rolling(self.params.bos_confirmation).max()
+            df["local_low"] = df["low"].rolling(self.params.bos_confirmation).min()
+
+            # Detect breaks
+            df["bos_up"] = (
+                (df["high"] > df["local_high"].shift(1))
                 & (df["close"] > df["open"])
-            ) | (
-                (df["bear_ob"].shift(1))
-                & (df["high"] >= df["high"].shift(1))
+                & (
+                    (df["high"] - df["local_high"].shift(1))
+                    > df["atr"] * self.params.bos_threshold
+                )
+            )
+
+            df["bos_down"] = (
+                (df["low"] < df["local_low"].shift(1))
                 & (df["close"] < df["open"])
+                & (
+                    (df["local_low"].shift(1) - df["low"])
+                    > df["atr"] * self.params.bos_threshold
+                )
             )
 
-        except Exception as e:
-            logger.error(f"Error detecting retests: {str(e)}")
-            return pd.Series(False, index=df.index)
-
-    def _calculate_ob_distance(self, df: pd.DataFrame) -> pd.Series:
-        """Calculate distance from nearest Order Block"""
-        try:
-            bull_distance = np.where(
-                df["bull_ob"],
-                0,
-                (df["close"] - df["low"].rolling(self.lookback_period).min())
-                / df["atr"],
+            # Calculate break strength
+            df["bos_strength"] = np.where(
+                df["bos_up"],
+                (df["high"] - df["local_high"].shift(1)) / df["atr"],
+                np.where(
+                    df["bos_down"],
+                    (df["local_low"].shift(1) - df["low"]) / df["atr"],
+                    0,
+                ),
             )
 
-            bear_distance = np.where(
-                df["bear_ob"],
-                0,
-                (df["high"].rolling(self.lookback_period).max() - df["close"])
-                / df["atr"],
-            )
-
-            return pd.Series(np.minimum(bull_distance, bear_distance), index=df.index)
-
-        except Exception as e:
-            logger.error(f"Error calculating OB distance: {str(e)}")
-            return pd.Series(0, index=df.index)
-
-    def _validate_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Validate and clean calculated features"""
-        try:
-            for column in self.feature_columns:
-                # Replace infinities
-                df[column] = df[column].replace([np.inf, -np.inf], np.nan)
-
-                # Fill NaN values
-                df[column] = df[column].fillna(method="ffill").fillna(0)
-
-                # Ensure proper range for normalized features
-                if column in ["ob_quality", "ob_strength", "ob_momentum"]:
-                    df[column] = df[column].clip(0, 1)
+            # Clean up
+            df = df.drop(["local_high", "local_low"], axis=1)
 
             return df
 
         except Exception as e:
-            logger.error(f"Error validating features: {str(e)}")
+            logger.error(f"Error analyzing break of structure: {str(e)}")
             return df
+
+    def _track_mitigation(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Track Order Block mitigation"""
+        try:
+            # Initialize mitigation columns
+            df["ob_mitigation"] = 0.0
+            df["mitigation_type"] = "none"
+
+            # Track bullish OB mitigation
+            bull_ob_mask = df["bull_ob"]
+            if bull_ob_mask.any():
+                for idx in df.index[bull_ob_mask]:
+                    ob_low = df.loc[idx, "low"]
+                    ob_high = df.loc[idx, "high"]
+                    future_prices = df.loc[idx:, "low"]
+
+                    mitigation = (ob_high - future_prices.min()) / (ob_high - ob_low)
+                    df.loc[idx, "ob_mitigation"] = max(min(mitigation, 1.0), 0.0)
+
+                    if mitigation >= self.params.mitigation_threshold:
+                        df.loc[idx, "mitigation_type"] = "full"
+                    elif mitigation >= self.params.partial_mitigation:
+                        df.loc[idx, "mitigation_type"] = "partial"
+
+            # Track bearish OB mitigation
+            bear_ob_mask = df["bear_ob"]
+            if bear_ob_mask.any():
+                for idx in df.index[bear_ob_mask]:
+                    ob_low = df.loc[idx, "low"]
+                    ob_high = df.loc[idx, "high"]
+                    future_prices = df.loc[idx:, "high"]
+
+                    mitigation = (future_prices.max() - ob_low) / (ob_high - ob_low)
+                    df.loc[idx, "ob_mitigation"] = max(min(mitigation, 1.0), 0.0)
+
+                    if mitigation >= self.params.mitigation_threshold:
+                        df.loc[idx, "mitigation_type"] = "full"
+                    elif mitigation >= self.params.partial_mitigation:
+                        df.loc[idx, "mitigation_type"] = "partial"
+
+            return df
+
+        except Exception as e:
+            logger.error(f"Error tracking mitigation: {str(e)}")
+            return df
+
+    def _calculate_strength(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate Order Block strength and quality metrics"""
+        try:
+            # Calculate components
+            volume_component = df["ob_volume_ratio"] * self.params.volume_weight
+            size_component = df["ob_size"] * self.params.size_weight
+
+            # Calculate age factor (decreasing with time)
+            df["ob_age"] = np.arange(len(df))[::-1]
+            time_component = (1 - (df["ob_age"] / len(df))) * self.params.time_weight
+
+            # Calculate overall strength
+            df["ob_strength"] = volume_component + size_component + time_component
+
+            # Calculate quality score
+            df["ob_quality"] = df["ob_strength"] * (1 - df["ob_mitigation"])
+
+            return df
+
+        except Exception as e:
+            logger.error(f"Error calculating strength metrics: {str(e)}")
+            return df
+
+    def _log_calculation(self, df: pd.DataFrame) -> None:
+        """Log calculation metadata"""
+        try:
+            log_entry = {
+                "timestamp": TradingConfig.get_current_timestamp(),
+                "rows_processed": len(df),
+                "bull_obs_detected": df["bull_ob"].sum(),
+                "bear_obs_detected": df["bear_ob"].sum(),
+                "parameters": self.params.__dict__,
+                "version": TradingConfig.VERSION,
+            }
+
+            log_file = TradingConfig.LOG_DIR / "order_block_calculations.jsonl"
+
+            with open(log_file, "a") as f:
+                f.write(f"{log_entry}\n")
+
+        except Exception as e:
+            logger.error(f"Error logging calculation metadata: {str(e)}")
 
     def get_feature_names(self) -> List[str]:
-        """Get list of feature names"""
+        """Get list of all Order Block feature names"""
         return self.feature_columns
 
-    def get_ob_features(self, row: pd.Series) -> OrderBlockFeatures:
-        """Get Order Block features for a single row"""
+    def get_feature_snapshot(self, row: pd.Series) -> Dict:
+        """Get snapshot of Order Block features for a single row"""
         try:
-            return OrderBlockFeatures(
-                bull_ob=bool(row["bull_ob"]),
-                bear_ob=bool(row["bear_ob"]),
-                ob_strength=float(row["ob_strength"]),
-                ob_volume_ratio=float(row["ob_volume_ratio"]),
-                ob_momentum=float(row["ob_momentum"]),
-                ob_quality=float(row["ob_quality"]),
-                reversal_zone=bool(row["reversal_zone"]),
-                ob_retest=bool(row["ob_retest"]),
-                ob_distance=float(row["ob_distance"]),
-                ob_confirmation=bool(row["ob_confirmation"]),
-            )
+            return {
+                feature: row[feature]
+                for feature in self.feature_columns
+                if feature in row
+            }
         except Exception as e:
-            logger.error(f"Error creating OB features: {str(e)}")
-            return None
+            logger.error(f"Error getting feature snapshot: {str(e)}")
+            return {}
 
-    def get_recent_order_blocks(
-        self, df: pd.DataFrame, lookback: int = 5
-    ) -> List[Dict]:
-        """Get recent Order Block information"""
-        try:
-            recent_obs = []
-
-            for i in range(min(lookback, len(df))):
-                row = df.iloc[-i - 1]
-                if row["bull_ob"] or row["bear_ob"]:
-                    ob_info = {
-                        "type": "bullish" if row["bull_ob"] else "bearish",
-                        "timestamp": row.name,
-                        "price": row["close"],
-                        "strength": row["ob_strength"],
-                        "quality": row["ob_quality"],
-                        "confirmed": row["ob_confirmation"],
-                    }
-                    recent_obs.append(ob_info)
-
-            return recent_obs
-
-        except Exception as e:
-            logger.error(f"Error getting recent order blocks: {str(e)}")
-            return []
+    def get_metadata(self) -> Dict:
+        """Get analyzer metadata"""
+        return {
+            **self.metadata,
+            "parameters": self.params.__dict__,
+            "feature_count": len(self.feature_columns),
+            "features": self.feature_columns,
+        }

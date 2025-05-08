@@ -2,77 +2,108 @@ import numpy as np
 import pandas as pd
 import logging
 from typing import Dict, List, Optional, Tuple
+from datetime import datetime, timezone
 from dataclasses import dataclass
-from datetime import datetime
+from pathlib import Path
+
+from config import TradingConfig
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class MarketStructureFeatures:
-    """Container for Market Structure features"""
+class MarketStructureParameters:
+    """Parameters for Market Structure analysis"""
 
-    trend_state: str  # uptrend, downtrend, ranging
-    structure_break: bool
-    higher_high: bool
-    lower_low: bool
-    swing_high: float
-    swing_low: float
-    trend_strength: float
-    breakout_level: float
-    market_context: str
-    structure_quality: float
+    # Trend Analysis
+    trend_period: int = 20  # Period for trend calculation
+    trend_threshold: float = 0.6  # Threshold for trend strength
+    swing_threshold: float = 0.002  # Minimum swing size
+
+    # Support/Resistance
+    sr_lookback: int = 50  # Lookback period for S/R levels
+    sr_touch_count: int = 3  # Minimum touches for valid level
+    sr_proximity: float = 0.001  # Proximity threshold for level grouping
+
+    # Structure Break
+    structure_break_threshold: float = 0.003  # Min size for structure break
+    confirmation_candles: int = 3  # Candles to confirm break
+
+    # Volatility
+    volatility_period: int = 20  # Period for volatility calculation
+    regime_threshold: float = 0.5  # Threshold for regime classification
+
+    # Momentum
+    momentum_period: int = 14  # Period for momentum indicators
+    momentum_threshold: float = 0.7  # Threshold for momentum significance
 
 
 class MarketStructureAnalyzer:
-    """Enhanced Market Structure feature generator"""
+    """Main class for Market Structure analysis"""
 
-    def __init__(self):
-        self.feature_columns = []
-        self.lookback_period = 20
-        self.swing_threshold = 2  # Number of candles for swing point confirmation
-        self.trend_threshold = 0.6  # Minimum trend strength threshold
-        self.created_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        self.created_by = "iwan026"
+    def __init__(self, params: Optional[MarketStructureParameters] = None):
+        """Initialize Market Structure analyzer with parameters"""
+        self.params = params or MarketStructureParameters()
+        self.feature_columns: List[str] = []
+        self._initialize_feature_columns()
+
+        self.metadata = {
+            "version": TradingConfig.VERSION,
+            "created_at": TradingConfig.get_current_timestamp(),
+            "created_by": TradingConfig.AUTHOR,
+        }
+
+    def _initialize_feature_columns(self) -> None:
+        """Initialize list of feature column names"""
+        self.feature_columns = [
+            # Trend Analysis
+            "trend_state",
+            "trend_strength",
+            "trend_duration",
+            # Support/Resistance
+            "nearest_support",
+            "nearest_resistance",
+            "sr_strength",
+            # Structure Break
+            "structure_break",
+            "break_direction",
+            "break_strength",
+            # Volatility
+            "volatility_regime",
+            "volatility_score",
+            # Momentum
+            "momentum_state",
+            "momentum_strength",
+        ]
 
     def calculate_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate comprehensive Market Structure features"""
+        """
+        Calculate all Market Structure related features
+
+        Args:
+            df: DataFrame with OHLCV data
+
+        Returns:
+            DataFrame with additional Market Structure features
+        """
         try:
-            # Validate input data
-            if df.empty or not all(
-                col in df.columns for col in ["open", "high", "low", "close", "volume"]
-            ):
-                logger.error("Missing required columns in input data")
-                return df
+            # Validate input
+            required_columns = ["open", "high", "low", "close", "volume"]
+            if not all(col in df.columns for col in required_columns):
+                raise ValueError("Missing required columns in input DataFrame")
 
-            # Calculate Swing Points
-            df = self._identify_swing_points(df)
+            # Create copy to prevent modifications to original
+            df = df.copy()
 
-            # Analyze Market Structure
-            df = self._analyze_market_structure(df)
+            # Calculate main features
+            df = self._analyze_trend(df)
+            df = self._identify_support_resistance(df)
+            df = self._detect_structure_breaks(df)
+            df = self._analyze_volatility(df)
+            df = self._analyze_momentum(df)
 
-            # Calculate Structure Breaks
-            df = self._calculate_structure_breaks(df)
-
-            # Analyze Market Context
-            df = self._analyze_market_context(df)
-
-            # Update feature columns list
-            self.feature_columns = [
-                "trend_state",
-                "structure_break",
-                "higher_high",
-                "lower_low",
-                "swing_high",
-                "swing_low",
-                "trend_strength",
-                "breakout_level",
-                "market_context",
-                "structure_quality",
-            ]
-
-            # Validate features
-            df = self._validate_features(df)
+            # Log calculation metadata
+            self._log_calculation(df)
 
             return df
 
@@ -80,225 +111,298 @@ class MarketStructureAnalyzer:
             logger.error(f"Error calculating Market Structure features: {str(e)}")
             return df
 
-    def _identify_swing_points(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Identify swing highs and lows"""
+    def _analyze_trend(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Analyze market trend state and characteristics"""
         try:
-            # Swing High Detection
-            df["swing_high"] = (
-                (df["high"] > df["high"].shift(1))
-                & (df["high"] > df["high"].shift(-1))
-                & (df["high"] > df["high"].shift(2))
-                & (df["high"] > df["high"].shift(-2))
+            period = self.params.trend_period
+
+            # Calculate moving averages
+            df["ma_fast"] = df["close"].rolling(period).mean()
+            df["ma_slow"] = df["close"].rolling(period * 2).mean()
+
+            # Calculate trend direction
+            df["trend_direction"] = np.where(
+                df["ma_fast"] > df["ma_slow"],
+                1,  # Uptrend
+                np.where(
+                    df["ma_fast"] < df["ma_slow"],
+                    -1,  # Downtrend
+                    0,  # Sideways
+                ),
             )
 
-            # Swing Low Detection
-            df["swing_low"] = (
-                (df["low"] < df["low"].shift(1))
-                & (df["low"] < df["low"].shift(-1))
-                & (df["low"] < df["low"].shift(2))
-                & (df["low"] < df["low"].shift(-2))
+            # Calculate trend strength
+            df["trend_strength"] = abs((df["ma_fast"] - df["ma_slow"]) / df["ma_slow"])
+
+            # Determine trend state
+            conditions = [
+                (df["trend_direction"] == 1)
+                & (df["trend_strength"] > self.params.trend_threshold),
+                (df["trend_direction"] == -1)
+                & (df["trend_strength"] > self.params.trend_threshold),
+                (df["trend_strength"] <= self.params.trend_threshold),
+            ]
+            choices = ["uptrend", "downtrend", "ranging"]
+            df["trend_state"] = np.select(conditions, choices, default="ranging")
+
+            # Calculate trend duration
+            df["trend_duration"] = (
+                df.groupby(
+                    (df["trend_state"] != df["trend_state"].shift(1)).cumsum()
+                ).cumcount()
+                + 1
             )
 
-            # Store swing point values
-            df["swing_high_value"] = np.where(df["swing_high"], df["high"], np.nan)
-            df["swing_low_value"] = np.where(df["swing_low"], df["low"], np.nan)
-
-            # Forward fill swing points
-            df["swing_high_value"] = df["swing_high_value"].fillna(method="ffill")
-            df["swing_low_value"] = df["swing_low_value"].fillna(method="ffill")
+            # Clean up
+            df = df.drop(["ma_fast", "ma_slow", "trend_direction"], axis=1)
 
             return df
 
         except Exception as e:
-            logger.error(f"Error identifying swing points: {str(e)}")
+            logger.error(f"Error analyzing trend: {str(e)}")
             return df
 
-    def _analyze_market_structure(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Analyze market structure and trends"""
+    def _identify_support_resistance(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Identify support and resistance levels"""
         try:
-            # Higher Highs & Lower Lows
-            df["higher_high"] = df["swing_high"] & (
-                df["high"] > df["swing_high_value"].shift(1)
+            lookback = self.params.sr_lookback
+
+            # Find swing highs and lows
+            df["swing_high"] = df["high"].rolling(lookback, center=True).max()
+            df["swing_low"] = df["low"].rolling(lookback, center=True).min()
+
+            # Group nearby levels
+            def group_levels(series: pd.Series) -> List[float]:
+                levels = []
+                current_group = []
+
+                sorted_values = sorted(series.unique())
+
+                for value in sorted_values:
+                    if (
+                        not current_group
+                        or abs(value - current_group[-1]) <= self.params.sr_proximity
+                    ):
+                        current_group.append(value)
+                    else:
+                        if len(current_group) >= self.params.sr_touch_count:
+                            levels.append(np.mean(current_group))
+                        current_group = [value]
+
+                if len(current_group) >= self.params.sr_touch_count:
+                    levels.append(np.mean(current_group))
+
+                return levels
+
+            # Find support and resistance levels
+            resistance_levels = group_levels(df["swing_high"])
+            support_levels = group_levels(df["swing_low"])
+
+            # Find nearest levels
+            current_price = df["close"].iloc[-1]
+
+            df["nearest_resistance"] = min(
+                [level for level in resistance_levels if level > current_price],
+                default=current_price,
             )
 
-            df["lower_low"] = df["swing_low"] & (
-                df["low"] < df["swing_low_value"].shift(1)
+            df["nearest_support"] = max(
+                [level for level in support_levels if level < current_price],
+                default=current_price,
             )
 
-            # Trend State Analysis
-            df["trend_state"] = self._determine_trend_state(df)
+            # Calculate S/R strength
+            df["sr_strength"] = (
+                df["volume"].rolling(lookback).mean()
+                / df["volume"].rolling(lookback).std()
+            )
 
-            # Trend Strength
-            df["trend_strength"] = self._calculate_trend_strength(df)
+            # Clean up
+            df = df.drop(["swing_high", "swing_low"], axis=1)
 
             return df
 
         except Exception as e:
-            logger.error(f"Error analyzing market structure: {str(e)}")
+            logger.error(f"Error identifying support/resistance: {str(e)}")
             return df
 
-    def _determine_trend_state(self, df: pd.DataFrame) -> pd.Series:
-        """Determine current trend state"""
+    def _detect_structure_breaks(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Detect market structure breaks"""
         try:
-            # Calculate trend based on higher highs and lower lows
-            trend_state = pd.Series(index=df.index, data="ranging")  # default state
+            threshold = self.params.structure_break_threshold
+            confirmation = self.params.confirmation_candles
 
-            # Uptrend conditions
-            uptrend = (
-                df["higher_high"]
-                & (df["close"] > df["close"].rolling(self.lookback_period).mean())
-                & (df["low"] > df["low"].shift(1))
-            )
+            # Identify potential breaks
+            df["higher_high"] = df["high"] > df["high"].rolling(
+                confirmation
+            ).max().shift(1)
 
-            # Downtrend conditions
-            downtrend = (
-                df["lower_low"]
-                & (df["close"] < df["close"].rolling(self.lookback_period).mean())
-                & (df["high"] < df["high"].shift(1))
-            )
+            df["lower_low"] = df["low"] < df["low"].rolling(confirmation).min().shift(1)
 
-            trend_state[uptrend] = "uptrend"
-            trend_state[downtrend] = "downtrend"
-
-            return trend_state
-
-        except Exception as e:
-            logger.error(f"Error determining trend state: {str(e)}")
-            return pd.Series("ranging", index=df.index)
-
-    def _calculate_structure_breaks(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate structure breaks and breakout levels"""
-        try:
-            # Structure Break Detection
+            # Confirm breaks with size threshold
             df["structure_break"] = (
-                df["trend_state"] != df["trend_state"].shift(1)
-            ) & (df["volume"] > df["volume"].rolling(self.lookback_period).mean())
+                df["higher_high"] & (df["high"] - df["high"].shift(1)) > threshold
+            ) | (df["lower_low"] & (df["low"].shift(1) - df["low"]) > threshold)
 
-            # Breakout Level Calculation
-            df["breakout_level"] = np.where(
-                df["structure_break"] & (df["trend_state"] == "uptrend"),
-                df["high"],
+            # Determine break direction
+            df["break_direction"] = np.where(
+                df["higher_high"] & df["structure_break"],
+                1,  # Bullish break
                 np.where(
-                    df["structure_break"] & (df["trend_state"] == "downtrend"),
-                    df["low"],
-                    np.nan,
+                    df["lower_low"] & df["structure_break"],
+                    -1,  # Bearish break
+                    0,  # No break
                 ),
             )
 
-            # Forward fill breakout levels
-            df["breakout_level"] = df["breakout_level"].fillna(method="ffill")
-
-            return df
-
-        except Exception as e:
-            logger.error(f"Error calculating structure breaks: {str(e)}")
-            return df
-
-    def _calculate_trend_strength(self, df: pd.DataFrame) -> pd.Series:
-        """Calculate trend strength metric"""
-        try:
-            # Initialize strength
-            strength = pd.Series(0.0, index=df.index)
-
-            # Calculate components
-            price_trend = (
-                df["close"] - df["close"].rolling(self.lookback_period).mean()
-            ) / df["close"].rolling(self.lookback_period).std()
-
-            volume_trend = (
-                df["volume"] - df["volume"].rolling(self.lookback_period).mean()
-            ) / df["volume"].rolling(self.lookback_period).std()
-
-            # Combine components
-            strength = np.abs(price_trend) * 0.7 + np.abs(volume_trend) * 0.3
-
-            # Normalize to 0-1
-            strength = (strength - strength.min()) / (strength.max() - strength.min())
-
-            return strength
-
-        except Exception as e:
-            logger.error(f"Error calculating trend strength: {str(e)}")
-            return pd.Series(0.0, index=df.index)
-
-    def _analyze_market_context(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Analyze broader market context"""
-        try:
-            # Market Context Analysis
-            df["market_context"] = np.where(
-                (df["trend_strength"] > self.trend_threshold)
-                & (df["trend_state"] == "uptrend"),
-                "strong_uptrend",
-                np.where(
-                    (df["trend_strength"] > self.trend_threshold)
-                    & (df["trend_state"] == "downtrend"),
-                    "strong_downtrend",
-                    np.where(
-                        df["trend_strength"] <= self.trend_threshold,
-                        "weak_trend",
-                        "ranging",
-                    ),
-                ),
+            # Calculate break strength
+            df["break_strength"] = np.where(
+                df["structure_break"],
+                abs(df["close"] - df["close"].shift(confirmation))
+                / df["close"].shift(confirmation),
+                0,
             )
 
-            # Structure Quality Score
-            df["structure_quality"] = (
-                df["trend_strength"] * 0.4
-                + (df["volume"] / df["volume"].rolling(self.lookback_period).mean())
-                * 0.3
-                + (df["structure_break"].astype(float) * 0.3)
+            # Clean up
+            df = df.drop(["higher_high", "lower_low"], axis=1)
+
+            return df
+
+        except Exception as e:
+            logger.error(f"Error detecting structure breaks: {str(e)}")
+            return df
+
+    def _analyze_volatility(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Analyze volatility regimes"""
+        try:
+            period = self.params.volatility_period
+
+            # Calculate different volatility measures
+            df["atr"] = self._calculate_atr(df, period)
+            df["volatility"] = (
+                df["close"].rolling(period).std() / df["close"].rolling(period).mean()
             )
 
+            # Normalize volatility score
+            df["volatility_score"] = (
+                df["volatility"] / df["volatility"].rolling(period * 2).max()
+            )
+
+            # Classify volatility regime
+            conditions = [
+                df["volatility_score"] > self.params.regime_threshold,
+                df["volatility_score"] <= self.params.regime_threshold * 0.5,
+                True,
+            ]
+            choices = ["high", "low", "normal"]
+
+            df["volatility_regime"] = np.select(conditions, choices, default="normal")
+
+            # Clean up
+            df = df.drop(["atr", "volatility"], axis=1)
+
             return df
 
         except Exception as e:
-            logger.error(f"Error analyzing market context: {str(e)}")
+            logger.error(f"Error analyzing volatility: {str(e)}")
             return df
 
-    def _validate_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Validate and clean calculated features"""
+    def _analyze_momentum(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Analyze market momentum"""
         try:
-            for column in self.feature_columns:
-                # Handle categorical columns
-                if column in ["trend_state", "market_context"]:
-                    df[column] = df[column].fillna("ranging")
-                    continue
+            period = self.params.momentum_period
 
-                # Handle numeric columns
-                if column in ["trend_strength", "structure_quality"]:
-                    df[column] = df[column].clip(0, 1)
+            # Calculate momentum indicators
+            df["roc"] = (df["close"] - df["close"].shift(period)) / df["close"].shift(
+                period
+            )
 
-                # Replace infinities
-                df[column] = df[column].replace([np.inf, -np.inf], np.nan)
+            df["momentum"] = df["close"] - df["close"].shift(period)
 
-                # Fill NaN values
-                df[column] = df[column].fillna(method="ffill").fillna(0)
+            # Calculate momentum strength
+            df["momentum_strength"] = abs(
+                df["momentum"] / df["momentum"].rolling(period).std()
+            )
+
+            # Determine momentum state
+            conditions = [
+                (df["momentum"] > 0)
+                & (df["momentum_strength"] > self.params.momentum_threshold),
+                (df["momentum"] < 0)
+                & (df["momentum_strength"] > self.params.momentum_threshold),
+                True,
+            ]
+            choices = ["bullish", "bearish", "neutral"]
+
+            df["momentum_state"] = np.select(conditions, choices, default="neutral")
+
+            # Clean up
+            df = df.drop(["roc", "momentum"], axis=1)
 
             return df
 
         except Exception as e:
-            logger.error(f"Error validating features: {str(e)}")
+            logger.error(f"Error analyzing momentum: {str(e)}")
             return df
+
+    def _calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
+        """Calculate Average True Range"""
+        try:
+            tr1 = df["high"] - df["low"]
+            tr2 = abs(df["high"] - df["close"].shift(1))
+            tr3 = abs(df["low"] - df["close"].shift(1))
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            return tr.rolling(period).mean()
+        except Exception as e:
+            logger.error(f"Error calculating ATR: {str(e)}")
+            return pd.Series(0, index=df.index)
+
+    def _log_calculation(self, df: pd.DataFrame) -> None:
+        """Log calculation metadata"""
+        try:
+            log_entry = {
+                "timestamp": TradingConfig.get_current_timestamp(),
+                "rows_processed": len(df),
+                "parameters": self.params.__dict__,
+                "version": TradingConfig.VERSION,
+                "stats": {
+                    "structure_breaks": df["structure_break"].sum(),
+                    "avg_trend_strength": df["trend_strength"].mean(),
+                    "volatility_regimes": df["volatility_regime"]
+                    .value_counts()
+                    .to_dict(),
+                },
+            }
+
+            log_file = TradingConfig.LOG_DIR / "market_structure_calculations.jsonl"
+
+            with open(log_file, "a") as f:
+                f.write(f"{log_entry}\n")
+
+        except Exception as e:
+            logger.error(f"Error logging calculation metadata: {str(e)}")
 
     def get_feature_names(self) -> List[str]:
-        """Get list of feature names"""
+        """Get list of all Market Structure feature names"""
         return self.feature_columns
 
-    def get_market_structure_features(self, row: pd.Series) -> MarketStructureFeatures:
-        """Get Market Structure features for a single row"""
+    def get_feature_snapshot(self, row: pd.Series) -> Dict:
+        """Get snapshot of Market Structure features for a single row"""
         try:
-            return MarketStructureFeatures(
-                trend_state=str(row["trend_state"]),
-                structure_break=bool(row["structure_break"]),
-                higher_high=bool(row["higher_high"]),
-                lower_low=bool(row["lower_low"]),
-                swing_high=float(row["swing_high_value"]),
-                swing_low=float(row["swing_low_value"]),
-                trend_strength=float(row["trend_strength"]),
-                breakout_level=float(row["breakout_level"]),
-                market_context=str(row["market_context"]),
-                structure_quality=float(row["structure_quality"]),
-            )
+            return {
+                feature: row[feature]
+                for feature in self.feature_columns
+                if feature in row
+            }
         except Exception as e:
-            logger.error(f"Error creating Market Structure features: {str(e)}")
-            return None
+            logger.error(f"Error getting feature snapshot: {str(e)}")
+            return {}
+
+    def get_metadata(self) -> Dict:
+        """Get analyzer metadata"""
+        return {
+            **self.metadata,
+            "parameters": self.params.__dict__,
+            "feature_count": len(self.feature_columns),
+            "features": self.feature_columns,
+        }

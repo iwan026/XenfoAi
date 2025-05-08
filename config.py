@@ -1,30 +1,28 @@
 import os
-import logging
-from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any
-from dataclasses import dataclass
 import json
-import pytz
+import logging
+from typing import Dict, List, Optional
+from datetime import datetime, timezone
+from dataclasses import dataclass
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class ModelParameters:
-    """Model architecture and training parameters"""
+    """Model training and prediction parameters"""
 
-    lookback_period: int = 60
-    feature_dims: int = 32
-    lstm_units: list = (64, 32)
-    dropout_rate: float = 0.3
-    learning_rate: float = 1e-3
-    batch_size: int = 32
+    lookback_period: int = 20
+    batch_size: int = 48
     epochs: int = 100
     validation_split: float = 0.2
-    early_stopping_patience: int = 10
-    reduce_lr_patience: int = 5
-    reduce_lr_factor: float = 0.5
-    min_lr: float = 1e-6
+    early_stopping_patience: int = 15
+    reduce_lr_patience: int = 7
+    dropout_rate: float = 0.4
+    l2_lambda: float = 0.02
+    attention_heads: int = 8
+    min_delta: float = 0.0001
 
 
 @dataclass
@@ -32,39 +30,35 @@ class SignalParameters:
     """Signal generation parameters"""
 
     confidence_threshold: float = 0.75
-    min_prediction_interval: int = 5  # minutes
     signal_expiry: int = 240  # minutes
-    signal_types: list = ("BUY", "SELL", "HOLD")
-    minimum_volatility: float = 0.0001
-    trend_confirmation_period: int = 3
-
-
-@dataclass
-class BacktestParameters:
-    """Backtesting configuration"""
-
-    initial_date: str = "2024-01-01"
-    signal_delay: int = 1  # candle delay for signal validation
-    minimum_trades: int = 30
-    accuracy_threshold: float = 0.6
+    min_signal_interval: int = 30  # minutes
+    volatility_threshold: float = 0.002
+    trend_strength_threshold: float = 0.6
 
 
 class TradingConfig:
-    """Enhanced configuration for signal generation"""
+    """Main configuration class for the trading system"""
 
-    # Basic paths
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    MODEL_DIR = os.path.join(BASE_DIR, "models")
-    LOG_DIR = os.path.join(BASE_DIR, "logs")
-    DATA_DIR = os.path.join(BASE_DIR, "data")
-    REPORT_DIR = os.path.join(BASE_DIR, "reports")
-    SIGNAL_DIR = os.path.join(BASE_DIR, "signals")
+    # System Constants
+    VERSION = "2.0.0"
+    AUTHOR = "Xentrovt"
+    CREATED_AT = "2025-05-08 13:34:11"
 
-    # Ensure directories exist
-    for directory in [MODEL_DIR, LOG_DIR, DATA_DIR, REPORT_DIR, SIGNAL_DIR]:
-        os.makedirs(directory, exist_ok=True)
+    # Directory Structure
+    BASE_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
+    MODEL_DIR = BASE_DIR / "models"
+    LOG_DIR = BASE_DIR / "logs"
+    DATA_DIR = BASE_DIR / "data"
+    REPORT_DIR = BASE_DIR / "reports"
+    SIGNAL_DIR = BASE_DIR / "signals"
+    BACKTEST_DIR = BASE_DIR / "backtest"
 
-    # MetaTrader5 Configuration (for market data only)
+    # Ensure all directories exist
+    REQUIRED_DIRS = [MODEL_DIR, LOG_DIR, DATA_DIR, REPORT_DIR, SIGNAL_DIR, BACKTEST_DIR]
+    for directory in REQUIRED_DIRS:
+        directory.mkdir(parents=True, exist_ok=True)
+
+    # MetaTrader5 Configuration
     MT5_LOGIN = 204313635
     MT5_PASSWORD = "123@Demo"
     MT5_SERVER = "Exness-MT5Trial7"
@@ -73,51 +67,26 @@ class TradingConfig:
     TELEGRAM_TOKEN = "7667262262:AAFYkfcdd8OZQskNYQPJ9KbVO8rGE3rvouI"
     ALLOWED_USERS = [1198920849]
 
-    # Model Configuration
+    # Trading Parameters
     MODEL_PARAMS = ModelParameters()
     SIGNAL_PARAMS = SignalParameters()
-    BACKTEST_PARAMS = BacktestParameters()
 
-    # Time Settings
-    TIMEZONE = pytz.UTC
-    MARKET_HOURS = {
-        "sydney": {"start": 22, "end": 7},
-        "tokyo": {"start": 0, "end": 9},
-        "london": {"start": 8, "end": 17},
-        "new_york": {"start": 13, "end": 22},
-    }
-
-    # Currency Pairs Configuration
-    CURRENCY_PAIRS = {
-        "major": ["EURUSD", "GBPUSD", "USDJPY", "USDCHF"],
-        "minor": ["EURGBP", "EURJPY", "GBPJPY"],
-        "exotic": ["EURNZD", "GBPCAD", "AUDNZD"],
-    }
-
-    # Feature Groups for Signal Generation
-    FEATURE_GROUPS = {
-        "price": ["open", "high", "low", "close", "returns"],
-        "momentum": ["rsi", "stoch_k", "stoch_d", "cci"],
-        "trend": ["sma_10", "sma_20", "sma_50", "ema_10", "ema_20", "ema_50"],
-        "volatility": ["atr", "bb_width", "volatility"],
-    }
-
-    # Market Regimes
-    MARKET_REGIMES = {
+    # Market Regime Parameters
+    REGIME_PARAMS = {
         "volatile_trend": {
             "atr_multiplier": 1.5,
-            "trend_strength_threshold": 25,
-            "volatility_threshold": 0.0015,
+            "trend_strength_threshold": 40,
+            "volatility_threshold": 0.0020,
         },
         "stable_trend": {
             "atr_multiplier": 1.2,
-            "trend_strength_threshold": 25,
-            "volatility_threshold": 0.0010,
+            "trend_strength_threshold": 30,
+            "volatility_threshold": 0.0015,
         },
         "volatile_range": {
             "atr_multiplier": 1.3,
-            "trend_strength_threshold": 20,
-            "volatility_threshold": 0.0015,
+            "trend_strength_threshold": 25,
+            "volatility_threshold": 0.0012,
         },
         "stable_range": {
             "atr_multiplier": 1.0,
@@ -127,26 +96,31 @@ class TradingConfig:
     }
 
     @classmethod
-    def get_model_path(cls, symbol: str, timeframe: str) -> str:
-        """Get model file path"""
-        try:
-            base_path = os.path.join(cls.MODEL_DIR, f"{symbol}_{timeframe}")
-            os.makedirs(base_path, exist_ok=True)
-            return os.path.join(base_path, "model.h5")
-        except Exception as e:
-            logger.error(f"Error getting model path: {str(e)}")
-            return ""
+    def get_current_timestamp(cls) -> str:
+        """Get current UTC timestamp in standard format"""
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
     @classmethod
-    def get_signal_path(cls, symbol: str, timeframe: str, date: str) -> str:
+    def get_model_path(cls, symbol: str, timeframe: str) -> Path:
+        """Get model file path"""
+        try:
+            base_path = cls.MODEL_DIR / f"{symbol}_{timeframe}"
+            base_path.mkdir(parents=True, exist_ok=True)
+            return base_path / "model.h5"
+        except Exception as e:
+            logger.error(f"Error getting model path: {str(e)}")
+            return cls.MODEL_DIR / "default.h5"
+
+    @classmethod
+    def get_signal_path(cls, symbol: str, timeframe: str, date: str) -> Path:
         """Get signal file path"""
         try:
-            base_path = os.path.join(cls.SIGNAL_DIR, symbol, timeframe)
-            os.makedirs(base_path, exist_ok=True)
-            return os.path.join(base_path, f"signals_{date}.json")
+            base_path = cls.SIGNAL_DIR / symbol / timeframe
+            base_path.mkdir(parents=True, exist_ok=True)
+            return base_path / f"signals_{date}.json"
         except Exception as e:
             logger.error(f"Error getting signal path: {str(e)}")
-            return ""
+            return cls.SIGNAL_DIR / "error_signals.json"
 
     @classmethod
     def save_signals(cls, signals: List[Dict], symbol: str, timeframe: str) -> bool:
@@ -155,10 +129,19 @@ class TradingConfig:
             current_date = datetime.now(timezone.utc).strftime("%Y%m%d")
             signal_path = cls.get_signal_path(symbol, timeframe, current_date)
 
-            with open(signal_path, "w") as f:
-                json.dump(signals, f, indent=4)
+            # Add metadata to signals
+            for signal in signals:
+                signal.update(
+                    {
+                        "saved_at": cls.get_current_timestamp(),
+                        "version": cls.VERSION,
+                        "author": cls.AUTHOR,
+                    }
+                )
 
+            signal_path.write_text(json.dumps(signals, indent=4))
             return True
+
         except Exception as e:
             logger.error(f"Error saving signals: {str(e)}")
             return False
@@ -173,69 +156,23 @@ class TradingConfig:
                 date = datetime.now(timezone.utc).strftime("%Y%m%d")
 
             signal_path = cls.get_signal_path(symbol, timeframe, date)
-            if not os.path.exists(signal_path):
+            if not signal_path.exists():
                 return None
 
-            with open(signal_path, "r") as f:
-                return json.load(f)
+            return json.loads(signal_path.read_text())
 
         except Exception as e:
             logger.error(f"Error loading signals: {str(e)}")
             return None
 
     @staticmethod
-    def validate_timeframe(timeframe: str) -> bool:
-        """Validate timeframe"""
-        valid_timeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"]
-        return timeframe.upper() in valid_timeframes
-
-    @classmethod
-    def get_log_path(cls, symbol: str, timeframe: str) -> str:
-        """Get log file path"""
-        try:
-            current_date = datetime.now(timezone.utc).strftime("%Y%m%d")
-            log_dir = os.path.join(cls.LOG_DIR, f"{symbol}_{timeframe}")
-            os.makedirs(log_dir, exist_ok=True)
-            return os.path.join(log_dir, f"{current_date}.log")
-        except Exception as e:
-            logger.error(f"Error getting log path: {str(e)}")
-            return ""
-
-    @classmethod
-    def is_market_open(cls, symbol: str) -> bool:
+    def is_market_open(symbol: str) -> bool:
         """Check if market is open for symbol"""
         try:
-            current_time = datetime.now(timezone.utc)
-            hour = current_time.hour
-
-            # Define trading sessions for currency pairs
-            pair_sessions = {
-                "USD": cls.MARKET_HOURS["new_york"],
-                "EUR": cls.MARKET_HOURS["london"],
-                "GBP": cls.MARKET_HOURS["london"],
-                "JPY": cls.MARKET_HOURS["tokyo"],
-                "AUD": cls.MARKET_HOURS["sydney"],
-                "NZD": cls.MARKET_HOURS["sydney"],
-            }
-
-            # Get currencies from symbol
-            curr1, curr2 = symbol[:3], symbol[3:]
-            relevant_sessions = [
-                session
-                for curr, session in pair_sessions.items()
-                if curr in [curr1, curr2]
-            ]
-
-            # Check if current hour is in any relevant session
-            for session in relevant_sessions:
-                if session["start"] <= hour < session["end"]:
-                    return True
-                if session["start"] > session["end"]:  # Session crosses midnight
-                    if hour >= session["start"] or hour < session["end"]:
-                        return True
-
-            return False
+            # TODO: Implement proper market hours checking
+            # For now return True as placeholder
+            return True
 
         except Exception as e:
-            logger.error(f"Error checking market hours: {str(e)}")
+            logger.error(f"Error checking market status: {str(e)}")
             return False

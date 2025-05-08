@@ -2,108 +2,140 @@ import numpy as np
 import pandas as pd
 import logging
 from typing import Dict, List, Optional, Tuple
+from datetime import datetime, timezone
 from dataclasses import dataclass
+from pathlib import Path
+
+from config import TradingConfig
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class SMCFeatures:
-    """Container for Smart Money Concept features"""
+class SMCParameters:
+    """Parameters for Smart Money Concepts calculations"""
 
-    fvg_up: bool
-    fvg_down: bool
-    fvg_up_size: float
-    fvg_down_size: float
-    price_inefficiency: float
-    inst_money_flow: float
-    smart_money_div: int
-    accumulation_score: float
-    distribution_score: float
-    institutional_activity: float
+    # Fair Value Gaps
+    fvg_threshold: float = 0.0015  # Minimum gap size (0.15%)
+    fvg_lookback: int = 20  # Periods to look back for gaps
+
+    # Price Inefficiency
+    inefficiency_threshold: float = 0.001  # Minimum inefficiency (0.1%)
+    inefficiency_window: int = 14  # Window for inefficiency calc
+
+    # Money Flow
+    flow_period: int = 20  # Period for money flow calculation
+    flow_threshold: float = 0.7  # Threshold for significant flow (70%)
+
+    # Divergence
+    divergence_lookback: int = 14  # Periods for divergence detection
+    divergence_threshold: float = 0.5  # Minimum divergence significance
+
+    # Volume
+    volume_ma_period: int = 20  # Moving average period for volume
+    volume_threshold: float = 1.5  # Volume spike threshold
 
 
 class SmartMoneyFeatures:
-    """Enhanced Smart Money Concepts feature generator"""
+    """Main class for Smart Money Concepts feature calculations"""
 
-    def __init__(self):
-        self.feature_columns = []
-        self.lookback_period = 20
-        self.volume_threshold = 1.5
-        self.price_threshold = 0.001
+    def __init__(self, params: Optional[SMCParameters] = None):
+        """Initialize SMC feature calculator with parameters"""
+        self.params = params or SMCParameters()
+        self.feature_columns: List[str] = []
+        self._initialize_feature_columns()
+
+        self.metadata = {
+            "version": TradingConfig.VERSION,
+            "created_at": TradingConfig.get_current_timestamp(),
+            "created_by": TradingConfig.AUTHOR,
+        }
+
+    def _initialize_feature_columns(self) -> None:
+        """Initialize list of feature column names"""
+        self.feature_columns = [
+            # Fair Value Gaps
+            "bull_fvg",
+            "bear_fvg",
+            "fvg_size",
+            "fvg_distance",
+            # Price Inefficiency
+            "price_inefficiency",
+            "inefficiency_score",
+            # Money Flow
+            "smart_money_flow",
+            "flow_strength",
+            "flow_direction",
+            # Divergence
+            "price_divergence",
+            "divergence_strength",
+            # Volume Analysis
+            "institutional_volume",
+            "volume_score",
+        ]
 
     def calculate_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate comprehensive Smart Money Concepts features"""
+        """
+        Calculate all Smart Money Concepts features
+
+        Args:
+            df: DataFrame with OHLCV data
+
+        Returns:
+            DataFrame with additional SMC features
+        """
         try:
-            # Validate input data
-            if df.empty or not all(
-                col in df.columns for col in ["open", "high", "low", "close", "volume"]
-            ):
-                logger.error("Missing required columns in input data")
-                return df
+            # Validate input
+            required_columns = ["open", "high", "low", "close", "volume"]
+            if not all(col in df.columns for col in required_columns):
+                raise ValueError("Missing required columns in input DataFrame")
 
-            # Fair Value Gaps (FVG)
+            # Create copy to prevent modifications to original
+            df = df.copy()
+
+            # Calculate individual feature components
             df = self._calculate_fair_value_gaps(df)
-
-            # Price Inefficiency
             df = self._calculate_price_inefficiency(df)
-
-            # Institutional Money Flow
             df = self._calculate_money_flow(df)
-
-            # Smart Money Divergence
             df = self._calculate_smart_money_divergence(df)
+            df = self._calculate_volume_analysis(df)
 
-            # Accumulation/Distribution Analysis
-            df = self._calculate_accumulation_distribution(df)
-
-            # Institutional Activity Score
-            df = self._calculate_institutional_activity(df)
-
-            # Update feature columns list
-            self.feature_columns = [
-                "fvg_up",
-                "fvg_down",
-                "fvg_up_size",
-                "fvg_down_size",
-                "price_inefficiency",
-                "inst_money_flow",
-                "smart_money_div",
-                "accumulation_score",
-                "distribution_score",
-                "institutional_activity",
-            ]
-
-            # Validate calculated features
-            df = self._validate_features(df)
+            # Log calculation metadata
+            self._log_calculation(df)
 
             return df
 
         except Exception as e:
-            logger.error(f"Error calculating Smart Money features: {str(e)}")
+            logger.error(f"Error calculating SMC features: {str(e)}")
+            # Return original DataFrame if calculation fails
             return df
 
     def _calculate_fair_value_gaps(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate Fair Value Gaps and their characteristics"""
+        """Calculate Fair Value Gaps (FVG)"""
         try:
-            # Bullish FVG
-            df["fvg_up"] = (df["low"].shift(2) > df["high"].shift(1)) & (
-                df["low"] > df["high"].shift(1)
+            # Bullish FVG: Low[1] > High[-1]
+            df["bull_fvg"] = (
+                (df["low"].shift(1) > df["high"].shift(-1))
+                & (df["close"].shift(1) > df["open"].shift(1))  # Bearish candle
+                & (df["close"].shift(-1) < df["open"].shift(-1))  # Bearish candle
             )
 
-            # Bearish FVG
-            df["fvg_down"] = (df["high"].shift(2) < df["low"].shift(1)) & (
-                df["high"] < df["low"].shift(1)
+            # Bearish FVG: High[1] < Low[-1]
+            df["bear_fvg"] = (
+                (df["high"].shift(1) < df["low"].shift(-1))
+                & (df["close"].shift(1) < df["open"].shift(1))  # Bullish candle
+                & (df["close"].shift(-1) > df["open"].shift(-1))  # Bullish candle
             )
 
-            # FVG Sizes
-            df["fvg_up_size"] = np.where(
-                df["fvg_up"], df["low"].shift(2) - df["high"].shift(1), 0
+            # Calculate FVG size
+            df["fvg_size"] = np.where(
+                df["bull_fvg"],
+                df["low"].shift(1) - df["high"].shift(-1),
+                np.where(df["bear_fvg"], df["low"].shift(-1) - df["high"].shift(1), 0),
             )
 
-            df["fvg_down_size"] = np.where(
-                df["fvg_down"], df["low"].shift(1) - df["high"].shift(2), 0
-            )
+            # Calculate distance from current price to FVG
+            df["fvg_distance"] = self._calculate_fvg_distance(df)
 
             return df
 
@@ -112,178 +144,206 @@ class SmartMoneyFeatures:
             return df
 
     def _calculate_price_inefficiency(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate price inefficiency metrics"""
+        """Calculate Price Inefficiencies"""
         try:
-            # Basic price inefficiency
-            df["price_inefficiency"] = abs(df["close"] - df["open"]) / (
-                df["high"] - df["low"] + 1e-7
+            window = self.params.inefficiency_window
+
+            # Calculate price swings
+            df["swing_high"] = df["high"].rolling(window, center=True).max()
+            df["swing_low"] = df["low"].rolling(window, center=True).min()
+
+            # Calculate inefficiency
+            df["price_inefficiency"] = (df["swing_high"] - df["swing_low"]) / df[
+                "close"
+            ].rolling(window).mean()
+
+            # Calculate inefficiency score
+            df["inefficiency_score"] = (
+                df["price_inefficiency"].rolling(window).mean()
+                / df["price_inefficiency"].rolling(window).std()
             )
 
-            # Rolling inefficiency
-            df["price_inefficiency"] = (
-                df["price_inefficiency"].rolling(window=self.lookback_period).mean()
-            )
+            # Clean up temporary columns
+            df = df.drop(["swing_high", "swing_low"], axis=1)
 
             return df
 
         except Exception as e:
-            logger.error(f"Error calculating price inefficiency: {str(e)}")
+            logger.error(f"Error calculating Price Inefficiency: {str(e)}")
             return df
 
     def _calculate_money_flow(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate institutional money flow indicators"""
+        """Calculate Smart Money Flow"""
         try:
-            # Money Flow calculation
-            df["money_flow"] = (
-                ((df["close"] - df["low"]) - (df["high"] - df["close"]))
-                / (df["high"] - df["low"] + 1e-7)
-                * df["volume"]
+            period = self.params.flow_period
+
+            # Calculate typical price
+            df["typical_price"] = (df["high"] + df["low"] + df["close"]) / 3
+
+            # Calculate money flow
+            df["money_flow"] = df["typical_price"] * df["volume"]
+
+            # Calculate positive and negative money flow
+            df["positive_flow"] = np.where(
+                df["typical_price"] > df["typical_price"].shift(1), df["money_flow"], 0
             )
 
-            # Institutional Money Flow Index
-            df["inst_money_flow"] = (
-                df["money_flow"].rolling(window=self.lookback_period).sum()
+            df["negative_flow"] = np.where(
+                df["typical_price"] < df["typical_price"].shift(1), df["money_flow"], 0
             )
 
-            # Normalize
-            df["inst_money_flow"] = (
-                df["inst_money_flow"] - df["inst_money_flow"].min()
-            ) / (df["inst_money_flow"].max() - df["inst_money_flow"].min() + 1e-7)
+            # Calculate money flow index
+            df["smart_money_flow"] = (
+                df["positive_flow"].rolling(period).sum()
+                / df["negative_flow"].rolling(period).sum()
+            )
+
+            # Calculate flow strength and direction
+            df["flow_strength"] = abs(df["smart_money_flow"] - 1)
+            df["flow_direction"] = np.sign(df["smart_money_flow"] - 1)
+
+            # Clean up temporary columns
+            df = df.drop(
+                ["typical_price", "money_flow", "positive_flow", "negative_flow"],
+                axis=1,
+            )
 
             return df
 
         except Exception as e:
-            logger.error(f"Error calculating money flow: {str(e)}")
+            logger.error(f"Error calculating Money Flow: {str(e)}")
             return df
 
     def _calculate_smart_money_divergence(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate Smart Money Divergence signals"""
+        """Calculate Smart Money Divergence"""
         try:
-            # Price and Volume Deltas
-            df["price_delta"] = df["close"] - df["close"].shift(1)
-            df["volume_delta"] = (
-                df["volume"] - df["volume"].rolling(window=self.lookback_period).mean()
+            lookback = self.params.divergence_lookback
+
+            # Calculate price momentum
+            df["price_momentum"] = (df["close"] - df["close"].shift(lookback)) / df[
+                "close"
+            ].shift(lookback)
+
+            # Calculate volume momentum
+            df["volume_momentum"] = (df["volume"] - df["volume"].shift(lookback)) / df[
+                "volume"
+            ].shift(lookback)
+
+            # Calculate divergence
+            df["price_divergence"] = (
+                df["price_momentum"] * -1 * np.sign(df["volume_momentum"])
             )
 
-            # Smart Money Divergence
-            df["smart_money_div"] = np.where(
-                (df["price_delta"] > 0) & (df["volume_delta"] < 0),
-                -1,  # Distribution
-                np.where(
-                    (df["price_delta"] < 0) & (df["volume_delta"] < 0),
-                    1,  # Accumulation
-                    0,
-                ),
+            # Calculate divergence strength
+            df["divergence_strength"] = abs(
+                df["price_momentum"] - df["volume_momentum"]
             )
+
+            # Clean up temporary columns
+            df = df.drop(["price_momentum", "volume_momentum"], axis=1)
 
             return df
 
         except Exception as e:
-            logger.error(f"Error calculating smart money divergence: {str(e)}")
+            logger.error(f"Error calculating Smart Money Divergence: {str(e)}")
             return df
 
-    def _calculate_accumulation_distribution(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate accumulation and distribution patterns"""
+    def _calculate_volume_analysis(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate Institutional Volume Analysis"""
         try:
-            # Accumulation Score
-            df["accumulation_score"] = (
-                np.where(
-                    (df["close"] > df["open"])
-                    & (df["volume"] > df["volume"].rolling(self.lookback_period).mean())
-                    & (df["close"] > df["close"].shift(1)),
-                    1,
-                    0,
-                )
-                .rolling(self.lookback_period)
-                .mean()
+            period = self.params.volume_ma_period
+            threshold = self.params.volume_threshold
+
+            # Calculate volume moving average
+            df["volume_ma"] = df["volume"].rolling(period).mean()
+
+            # Identify institutional volume
+            df["institutional_volume"] = df["volume"] > (df["volume_ma"] * threshold)
+
+            # Calculate volume score
+            df["volume_score"] = (
+                df["volume"]
+                / df["volume_ma"]
+                * np.where(df["close"] > df["open"], 1, -1)
             )
 
-            # Distribution Score
-            df["distribution_score"] = (
-                np.where(
-                    (df["close"] < df["open"])
-                    & (df["volume"] > df["volume"].rolling(self.lookback_period).mean())
-                    & (df["close"] < df["close"].shift(1)),
-                    1,
-                    0,
-                )
-                .rolling(self.lookback_period)
-                .mean()
-            )
+            # Clean up temporary columns
+            df = df.drop(["volume_ma"], axis=1)
 
             return df
 
         except Exception as e:
-            logger.error(f"Error calculating accumulation/distribution: {str(e)}")
+            logger.error(f"Error calculating Volume Analysis: {str(e)}")
             return df
 
-    def _calculate_institutional_activity(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate institutional activity composite score"""
+    def _calculate_fvg_distance(self, df: pd.DataFrame) -> pd.Series:
+        """Calculate distance from current price to nearest FVG"""
         try:
-            # Combine various institutional indicators
-            df["institutional_activity"] = (
-                df["accumulation_score"] * 0.3
-                + df["inst_money_flow"] * 0.3
-                + (1 - df["price_inefficiency"]) * 0.2
-                + (df["volume"] / df["volume"].rolling(self.lookback_period).mean())
-                * 0.2
+            current_price = df["close"]
+
+            # Find nearest bullish FVG
+            bull_fvg_price = np.where(
+                df["bull_fvg"], (df["low"].shift(1) + df["high"].shift(-1)) / 2, np.nan
             )
 
-            # Normalize to 0-1 range
-            df["institutional_activity"] = (
-                df["institutional_activity"]
-                - df["institutional_activity"].rolling(self.lookback_period).min()
-            ) / (
-                df["institutional_activity"].rolling(self.lookback_period).max()
-                - df["institutional_activity"].rolling(self.lookback_period).min()
-                + 1e-7
+            # Find nearest bearish FVG
+            bear_fvg_price = np.where(
+                df["bear_fvg"], (df["high"].shift(1) + df["low"].shift(-1)) / 2, np.nan
             )
 
-            return df
+            # Calculate distances
+            bull_distance = abs(current_price - bull_fvg_price)
+            bear_distance = abs(current_price - bear_fvg_price)
+
+            # Return minimum distance
+            return pd.Series(
+                np.nanmin([bull_distance, bear_distance], axis=0), index=df.index
+            )
 
         except Exception as e:
-            logger.error(f"Error calculating institutional activity: {str(e)}")
-            return df
+            logger.error(f"Error calculating FVG distance: {str(e)}")
+            return pd.Series(0, index=df.index)
 
-    def _validate_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Validate and clean calculated features"""
+    def _log_calculation(self, df: pd.DataFrame) -> None:
+        """Log calculation metadata"""
         try:
-            for column in self.feature_columns:
-                # Replace infinities
-                df[column] = df[column].replace([np.inf, -np.inf], np.nan)
+            log_entry = {
+                "timestamp": TradingConfig.get_current_timestamp(),
+                "rows_processed": len(df),
+                "features_calculated": len(self.feature_columns),
+                "parameters": self.params.__dict__,
+                "version": TradingConfig.VERSION,
+            }
 
-                # Fill NaN values
-                df[column] = df[column].fillna(method="ffill").fillna(0)
+            log_file = TradingConfig.LOG_DIR / "smc_calculations.jsonl"
 
-                # Ensure proper range for normalized features
-                if column in ["inst_money_flow", "institutional_activity"]:
-                    df[column] = df[column].clip(0, 1)
-
-            return df
+            with open(log_file, "a") as f:
+                f.write(f"{log_entry}\n")
 
         except Exception as e:
-            logger.error(f"Error validating features: {str(e)}")
-            return df
+            logger.error(f"Error logging calculation metadata: {str(e)}")
 
     def get_feature_names(self) -> List[str]:
-        """Get list of feature names"""
+        """Get list of all SMC feature names"""
         return self.feature_columns
 
-    def get_smc_features(self, row: pd.Series) -> SMCFeatures:
-        """Get SMC features for a single row"""
+    def get_feature_snapshot(self, row: pd.Series) -> Dict:
+        """Get snapshot of SMC features for a single row"""
         try:
-            return SMCFeatures(
-                fvg_up=bool(row["fvg_up"]),
-                fvg_down=bool(row["fvg_down"]),
-                fvg_up_size=float(row["fvg_up_size"]),
-                fvg_down_size=float(row["fvg_down_size"]),
-                price_inefficiency=float(row["price_inefficiency"]),
-                inst_money_flow=float(row["inst_money_flow"]),
-                smart_money_div=int(row["smart_money_div"]),
-                accumulation_score=float(row["accumulation_score"]),
-                distribution_score=float(row["distribution_score"]),
-                institutional_activity=float(row["institutional_activity"]),
-            )
+            return {
+                feature: row[feature]
+                for feature in self.feature_columns
+                if feature in row
+            }
         except Exception as e:
-            logger.error(f"Error creating SMC features: {str(e)}")
-            return None
+            logger.error(f"Error getting feature snapshot: {str(e)}")
+            return {}
+
+    def get_metadata(self) -> Dict:
+        """Get calculator metadata"""
+        return {
+            **self.metadata,
+            "parameters": self.params.__dict__,
+            "feature_count": len(self.feature_columns),
+            "features": self.feature_columns,
+        }

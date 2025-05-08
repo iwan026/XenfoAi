@@ -1,264 +1,86 @@
 import numpy as np
 import pandas as pd
 import logging
-from typing import Dict, List, Optional, Tuple, Union, Any
+from typing import Dict, List, Optional, Tuple, Union
 from datetime import datetime, timezone
-import talib
 from dataclasses import dataclass
+from pathlib import Path
+
+from config import TradingConfig
 
 logger = logging.getLogger(__name__)
 
-CURRENT_UTC = "2025-05-08 12:26:13"
-CURRENT_USER = "Xentrovt"
-
 
 @dataclass
-class TechnicalLevels:
-    """Container for key technical levels"""
+class TechnicalLevelParameters:
+    """Parameters for technical level calculations"""
 
-    support: float
-    resistance: float
-    daily_pivot: float
-    weekly_pivot: float
-    monthly_pivot: float
-    atr: float
-    volatility: float
+    # Price Levels
+    pivot_period: int = 20  # Period for pivot point calculation
+    fibonacci_levels: List[float] = (  # Fibonacci retracement levels
+        lambda: [0.236, 0.382, 0.5, 0.618, 0.786]
+    )()
+
+    # Moving Averages
+    ma_periods: List[int] = (  # Periods for moving averages
+        lambda: [20, 50, 100, 200]
+    )()
+
+    # Volatility
+    atr_period: int = 14  # Period for ATR calculation
+    std_dev_period: int = 20  # Period for standard deviation
+
+    # Statistical
+    zscore_period: int = 20  # Period for z-score calculation
+    outlier_threshold: float = 2.0  # Z-score threshold for outliers
 
 
 class FeatureUtils:
-    """Utility functions for feature calculations"""
+    """Utility class for feature calculations and analysis"""
 
-    @staticmethod
-    def normalize_feature(series: pd.Series, method: str = "minmax") -> pd.Series:
-        """Normalize feature to 0-1 range"""
+    def __init__(self, params: Optional[TechnicalLevelParameters] = None):
+        """Initialize Feature utilities with parameters"""
+        self.params = params or TechnicalLevelParameters()
+        self.metadata = {
+            "version": TradingConfig.VERSION,
+            "created_at": TradingConfig.get_current_timestamp(),
+            "created_by": TradingConfig.AUTHOR,
+        }
+
+    def validate_dataframe(self, df: pd.DataFrame, required_columns: List[str]) -> bool:
+        """
+        Validate DataFrame structure and content
+
+        Args:
+            df: DataFrame to validate
+            required_columns: List of required column names
+
+        Returns:
+            bool: True if validation passes
+        """
         try:
-            if method == "minmax":
-                min_val = series.min()
-                max_val = series.max()
-                if max_val == min_val:
-                    return pd.Series(0, index=series.index)
-                return (series - min_val) / (max_val - min_val)
-            elif method == "zscore":
-                mean = series.mean()
-                std = series.std()
-                if std == 0:
-                    return pd.Series(0, index=series.index)
-                return (series - mean) / std
-            else:
-                raise ValueError(f"Unknown normalization method: {method}")
+            # Check if DataFrame is empty
+            if df.empty:
+                logger.error("DataFrame is empty")
+                return False
 
-        except Exception as e:
-            logger.error(f"Error normalizing feature: {str(e)}")
-            return pd.Series(0, index=series.index)
-
-    @staticmethod
-    def calculate_technical_levels(df: pd.DataFrame) -> TechnicalLevels:
-        """Calculate key technical levels"""
-        try:
-            # Support and Resistance
-            support = df["low"].rolling(20).min().iloc[-1]
-            resistance = df["high"].rolling(20).max().iloc[-1]
-
-            # Pivot Points
-            typical_price = (df["high"] + df["low"] + df["close"]) / 3
-
-            daily_pivot = typical_price.iloc[-1]
-            weekly_pivot = typical_price.tail(5).mean()
-            monthly_pivot = typical_price.tail(20).mean()
-
-            # Volatility Metrics
-            atr = talib.ATR(
-                df["high"].values, df["low"].values, df["close"].values, timeperiod=14
-            )[-1]
-
-            volatility = df["close"].pct_change().std()
-
-            return TechnicalLevels(
-                support=support,
-                resistance=resistance,
-                daily_pivot=daily_pivot,
-                weekly_pivot=weekly_pivot,
-                monthly_pivot=monthly_pivot,
-                atr=atr,
-                volatility=volatility,
-            )
-
-        except Exception as e:
-            logger.error(f"Error calculating technical levels: {str(e)}")
-            return None
-
-    @staticmethod
-    def calculate_zscore(series: pd.Series, window: int = 20) -> pd.Series:
-        """Calculate rolling z-score"""
-        try:
-            mean = series.rolling(window=window).mean()
-            std = series.rolling(window=window).std()
-            return (series - mean) / std
-
-        except Exception as e:
-            logger.error(f"Error calculating z-score: {str(e)}")
-            return pd.Series(0, index=series.index)
-
-    @staticmethod
-    def detect_divergence(
-        price: pd.Series, indicator: pd.Series, window: int = 20
-    ) -> pd.Series:
-        """Detect regular and hidden divergences"""
-        try:
-            # Price and Indicator Trends
-            price_trend = price.diff()
-            indicator_trend = indicator.diff()
-
-            # Regular Bullish Divergence
-            reg_bull_div = (
-                (price_trend < 0)
-                & (indicator_trend > 0)
-                & (price < price.shift(window))
-                & (indicator > indicator.shift(window))
-            )
-
-            # Regular Bearish Divergence
-            reg_bear_div = (
-                (price_trend > 0)
-                & (indicator_trend < 0)
-                & (price > price.shift(window))
-                & (indicator < indicator.shift(window))
-            )
-
-            # Hidden Bullish Divergence
-            hid_bull_div = (
-                (price_trend > 0)
-                & (indicator_trend < 0)
-                & (price > price.shift(window))
-                & (indicator < indicator.shift(window))
-            )
-
-            # Hidden Bearish Divergence
-            hid_bear_div = (
-                (price_trend < 0)
-                & (indicator_trend > 0)
-                & (price < price.shift(window))
-                & (indicator > indicator.shift(window))
-            )
-
-            # Combine all divergences
-            divergence = pd.Series(0, index=price.index)
-            divergence[reg_bull_div] = 1  # Regular Bullish
-            divergence[reg_bear_div] = -1  # Regular Bearish
-            divergence[hid_bull_div] = 2  # Hidden Bullish
-            divergence[hid_bear_div] = -2  # Hidden Bearish
-
-            return divergence
-
-        except Exception as e:
-            logger.error(f"Error detecting divergence: {str(e)}")
-            return pd.Series(0, index=price.index)
-
-    @staticmethod
-    def calculate_efficiency_ratio(prices: pd.Series, window: int = 14) -> pd.Series:
-        """Calculate Market Efficiency Ratio"""
-        try:
-            direction = abs(prices - prices.shift(window))
-            volatility = pd.Series(0, index=prices.index)
-
-            for i in range(window):
-                volatility += abs(prices - prices.shift(1))
-
-            return direction / volatility
-
-        except Exception as e:
-            logger.error(f"Error calculating efficiency ratio: {str(e)}")
-            return pd.Series(0, index=prices.index)
-
-    @staticmethod
-    def detect_volume_anomaly(volume: pd.Series, threshold: float = 2.0) -> pd.Series:
-        """Detect volume anomalies"""
-        try:
-            volume_sma = volume.rolling(window=20).mean()
-            volume_std = volume.rolling(window=20).std()
-
-            return (volume - volume_sma) > (volume_std * threshold)
-
-        except Exception as e:
-            logger.error(f"Error detecting volume anomaly: {str(e)}")
-            return pd.Series(False, index=volume.index)
-
-    @staticmethod
-    def get_session_times(timestamp: pd.Timestamp) -> Dict[str, bool]:
-        """Determine active trading sessions"""
-        try:
-            hour = timestamp.hour
-
-            sessions = {"asian": False, "london": False, "new_york": False}
-
-            # Asian Session (Tokyo)
-            if 0 <= hour < 9:
-                sessions["asian"] = True
-
-            # London Session
-            if 8 <= hour < 16:
-                sessions["london"] = True
-
-            # New York Session
-            if 13 <= hour < 22:
-                sessions["new_york"] = True
-
-            return sessions
-
-        except Exception as e:
-            logger.error(f"Error getting session times: {str(e)}")
-            return {"asian": False, "london": False, "new_york": False}
-
-    @staticmethod
-    def calculate_momentum_quality(
-        close: pd.Series, volume: pd.Series, window: int = 14
-    ) -> pd.Series:
-        """Calculate momentum quality"""
-        try:
-            # Price momentum
-            returns = close.pct_change()
-            momentum = returns.rolling(window).mean()
-
-            # Volume momentum
-            volume_ratio = volume / volume.rolling(window).mean()
-
-            # Combine price and volume momentum
-            quality = momentum * np.sqrt(volume_ratio)
-
-            return FeatureUtils.normalize_feature(quality)
-
-        except Exception as e:
-            logger.error(f"Error calculating momentum quality: {str(e)}")
-            return pd.Series(0, index=close.index)
-
-    @staticmethod
-    def log_calculation_metadata(
-        feature_name: str, calculation_time: float, params: Dict[str, Any]
-    ) -> None:
-        """Log feature calculation metadata"""
-        try:
-            metadata = {
-                "feature": feature_name,
-                "calculation_time": calculation_time,
-                "parameters": params,
-                "timestamp": CURRENT_UTC,
-                "calculated_by": CURRENT_USER,
-            }
-
-            logger.info(f"Feature calculation metadata: {metadata}")
-
-        except Exception as e:
-            logger.error(f"Error logging calculation metadata: {str(e)}")
-
-    @staticmethod
-    def validate_dataframe(df: pd.DataFrame, required_columns: List[str]) -> bool:
-        """Validate DataFrame has required columns"""
-        try:
+            # Check required columns
             missing_columns = [col for col in required_columns if col not in df.columns]
-
             if missing_columns:
                 logger.error(f"Missing required columns: {missing_columns}")
                 return False
+
+            # Check for NaN values
+            nan_columns = (
+                df[required_columns].columns[df[required_columns].isna().any()].tolist()
+            )
+            if nan_columns:
+                logger.error(f"NaN values found in columns: {nan_columns}")
+                return False
+
+            # Check index
+            if not isinstance(df.index, pd.DatetimeIndex):
+                logger.warning("DataFrame index is not DatetimeIndex")
 
             return True
 
@@ -266,23 +88,192 @@ class FeatureUtils:
             logger.error(f"Error validating DataFrame: {str(e)}")
             return False
 
-    @staticmethod
-    def get_timeframe_minutes(timeframe: str) -> int:
-        """Convert timeframe string to minutes"""
+    def calculate_technical_levels(self, df: pd.DataFrame) -> Dict:
+        """Calculate various technical levels"""
         try:
-            timeframe_dict = {
-                "M1": 1,
-                "M5": 5,
-                "M15": 15,
-                "M30": 30,
-                "H1": 60,
-                "H4": 240,
-                "D1": 1440,
-                "W1": 10080,
-            }
+            levels = {}
 
-            return timeframe_dict.get(timeframe.upper(), 0)
+            # Calculate pivot points
+            levels.update(self._calculate_pivot_points(df))
+
+            # Calculate Fibonacci levels
+            levels.update(self._calculate_fibonacci_levels(df))
+
+            # Calculate moving averages
+            levels.update(self._calculate_moving_averages(df))
+
+            # Calculate volatility levels
+            levels.update(self._calculate_volatility_levels(df))
+
+            return levels
 
         except Exception as e:
-            logger.error(f"Error converting timeframe: {str(e)}")
-            return 0
+            logger.error(f"Error calculating technical levels: {str(e)}")
+            return {}
+
+    def _calculate_pivot_points(self, df: pd.DataFrame) -> Dict:
+        """Calculate pivot points and associated levels"""
+        try:
+            period = self.params.pivot_period
+
+            # Get high, low, close for period
+            high = df["high"].rolling(period).max().iloc[-1]
+            low = df["low"].rolling(period).min().iloc[-1]
+            close = df["close"].iloc[-1]
+
+            # Calculate pivot point
+            pivot = (high + low + close) / 3
+
+            # Calculate support and resistance levels
+            r1 = 2 * pivot - low
+            r2 = pivot + (high - low)
+            r3 = high + 2 * (pivot - low)
+
+            s1 = 2 * pivot - high
+            s2 = pivot - (high - low)
+            s3 = low - 2 * (high - pivot)
+
+            return {
+                "pivot_point": pivot,
+                "resistance_levels": [r1, r2, r3],
+                "support_levels": [s1, s2, s3],
+            }
+
+        except Exception as e:
+            logger.error(f"Error calculating pivot points: {str(e)}")
+            return {}
+
+    def _calculate_fibonacci_levels(self, df: pd.DataFrame) -> Dict:
+        """Calculate Fibonacci retracement levels"""
+        try:
+            # Get high and low
+            high = df["high"].max()
+            low = df["low"].min()
+            trend_range = high - low
+
+            # Calculate levels
+            levels = {
+                f"fib_{int(level * 1000)}": low + trend_range * level
+                for level in self.params.fibonacci_levels
+            }
+
+            return {"fibonacci_levels": levels}
+
+        except Exception as e:
+            logger.error(f"Error calculating Fibonacci levels: {str(e)}")
+            return {}
+
+    def _calculate_moving_averages(self, df: pd.DataFrame) -> Dict:
+        """Calculate multiple moving averages"""
+        try:
+            mas = {}
+
+            for period in self.params.ma_periods:
+                ma = df["close"].rolling(period).mean().iloc[-1]
+                mas[f"ma_{period}"] = ma
+
+            return {"moving_averages": mas}
+
+        except Exception as e:
+            logger.error(f"Error calculating moving averages: {str(e)}")
+            return {}
+
+    def _calculate_volatility_levels(self, df: pd.DataFrame) -> Dict:
+        """Calculate volatility-based levels"""
+        try:
+            # Calculate ATR
+            atr = self._calculate_atr(df).iloc[-1]
+
+            # Calculate standard deviation
+            std_dev = df["close"].rolling(self.params.std_dev_period).std().iloc[-1]
+
+            current_price = df["close"].iloc[-1]
+
+            return {
+                "volatility_levels": {
+                    "atr": atr,
+                    "std_dev": std_dev,
+                    "upper_band": current_price + 2 * std_dev,
+                    "lower_band": current_price - 2 * std_dev,
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"Error calculating volatility levels: {str(e)}")
+            return {}
+
+    def _calculate_atr(self, df: pd.DataFrame) -> pd.Series:
+        """Calculate Average True Range"""
+        try:
+            period = self.params.atr_period
+
+            tr1 = df["high"] - df["low"]
+            tr2 = abs(df["high"] - df["close"].shift(1))
+            tr3 = abs(df["low"] - df["close"].shift(1))
+
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            atr = tr.rolling(period).mean()
+
+            return atr
+
+        except Exception as e:
+            logger.error(f"Error calculating ATR: {str(e)}")
+            return pd.Series(0, index=df.index)
+
+    def calculate_zscore(
+        self, series: pd.Series, period: Optional[int] = None
+    ) -> pd.Series:
+        """Calculate rolling z-score for a series"""
+        try:
+            if period is None:
+                period = self.params.zscore_period
+
+            mean = series.rolling(period).mean()
+            std = series.rolling(period).std()
+
+            return (series - mean) / std
+
+        except Exception as e:
+            logger.error(f"Error calculating z-score: {str(e)}")
+            return pd.Series(0, index=series.index)
+
+    def detect_outliers(
+        self, series: pd.Series, threshold: Optional[float] = None
+    ) -> pd.Series:
+        """Detect outliers using z-score method"""
+        try:
+            if threshold is None:
+                threshold = self.params.outlier_threshold
+
+            zscore = self.calculate_zscore(series)
+            return abs(zscore) > threshold
+
+        except Exception as e:
+            logger.error(f"Error detecting outliers: {str(e)}")
+            return pd.Series(False, index=series.index)
+
+    def log_calculation_metadata(
+        self, operation: str, calculation_time: float, metadata: Dict
+    ) -> None:
+        """Log feature calculation metadata"""
+        try:
+            log_entry = {
+                "timestamp": TradingConfig.get_current_timestamp(),
+                "operation": operation,
+                "calculation_time": calculation_time,
+                "version": TradingConfig.VERSION,
+                "user": TradingConfig.AUTHOR,
+                **metadata,
+            }
+
+            log_file = TradingConfig.LOG_DIR / "feature_calculations.jsonl"
+
+            with open(log_file, "a") as f:
+                f.write(f"{log_entry}\n")
+
+        except Exception as e:
+            logger.error(f"Error logging calculation metadata: {str(e)}")
+
+    def get_metadata(self) -> Dict:
+        """Get utility metadata"""
+        return {**self.metadata, "parameters": self.params.__dict__}

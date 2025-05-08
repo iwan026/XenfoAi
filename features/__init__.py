@@ -1,49 +1,26 @@
-"""
-Forex Trading Features Package
-Created at: 2025-05-08 12:28:04
-Created by: Xentrovt
-
-This package provides comprehensive feature generation for forex trading analysis.
-"""
-
 import logging
+import pandas as pd
 from typing import Dict, List, Optional, Union
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
 
-from .smart_money import SmartMoneyFeatures, SMCFeatures
-from .order_blocks import OrderBlockAnalyzer, OrderBlockFeatures
-from .volume_profile import VolumeProfileAnalyzer, VolumeProfileFeatures
-from .market_structure import MarketStructureAnalyzer, MarketStructureFeatures
-from .liquidity import LiquidityAnalyzer, LiquidityFeatures
-from .utils import FeatureUtils, TechnicalLevels
+from .smart_money import SmartMoneyFeatures
+from .order_blocks import OrderBlockAnalyzer
+from .volume_profile import VolumeProfileAnalyzer
+from .market_structure import MarketStructureAnalyzer
+from .liquidity import LiquidityAnalyzer
+from .utils import FeatureUtils
+
+from config import TradingConfig
 
 logger = logging.getLogger(__name__)
 
-__version__ = "1.0.0"
-__author__ = "iwan026"
-__created_at__ = "2025-05-08 12:28:04"
-
-__all__ = [
-    "SmartMoneyFeatures",
-    "SMCFeatures",
-    "OrderBlockAnalyzer",
-    "OrderBlockFeatures",
-    "VolumeProfileAnalyzer",
-    "VolumeProfileFeatures",
-    "MarketStructureAnalyzer",
-    "MarketStructureFeatures",
-    "LiquidityAnalyzer",
-    "LiquidityFeatures",
-    "FeatureUtils",
-    "TechnicalLevels",
-    "FeatureCalculator",
-]
-
 
 class FeatureCalculator:
-    """Main class for calculating all features"""
+    """Main class for calculating all trading features"""
 
     def __init__(self):
+        """Initialize feature analyzers and metadata"""
         self.smc = SmartMoneyFeatures()
         self.order_blocks = OrderBlockAnalyzer()
         self.volume_profile = VolumeProfileAnalyzer()
@@ -51,25 +28,49 @@ class FeatureCalculator:
         self.liquidity = LiquidityAnalyzer()
         self.utils = FeatureUtils()
 
-        self.feature_columns = []
+        self.feature_columns: List[str] = []
         self.metadata = {
-            "version": __version__,
-            "created_at": __created_at__,
-            "created_by": __author__,
+            "version": TradingConfig.VERSION,
+            "created_at": TradingConfig.get_current_timestamp(),
+            "created_by": TradingConfig.AUTHOR,
         }
 
+        # Cache for feature calculations
+        self._cache: Dict = {}
+        self._cache_expiry: Dict = {}
+        self.CACHE_DURATION = 300  # 5 minutes in seconds
+
     def calculate_all_features(
-        self, df: pd.DataFrame, include_features: Optional[List[str]] = None
+        self,
+        df: pd.DataFrame,
+        include_features: Optional[List[str]] = None,
+        use_cache: bool = True,
     ) -> pd.DataFrame:
-        """Calculate all or selected features"""
+        """
+        Calculate all or selected features with caching support
+
+        Args:
+            df: DataFrame with OHLCV data
+            include_features: List of features to calculate, None for all
+            use_cache: Whether to use calculation caching
+
+        Returns:
+            DataFrame with calculated features
+        """
         try:
             # Validate input data
             required_columns = ["open", "high", "low", "close", "volume"]
             if not self.utils.validate_dataframe(df, required_columns):
                 raise ValueError("Missing required columns in input data")
 
+            # Check cache if enabled
+            cache_key = self._generate_cache_key(df, include_features)
+            if use_cache and self._check_cache(cache_key):
+                logger.info("Using cached feature calculations")
+                return self._cache[cache_key]
+
             # Initialize feature calculation
-            calculation_start = datetime.utcnow()
+            calculation_start = datetime.now(timezone.utc)
 
             # Default to all features if none specified
             if include_features is None:
@@ -82,33 +83,49 @@ class FeatureCalculator:
                 ]
 
             # Calculate selected features
-            if "smc" in include_features:
-                df = self.smc.calculate_features(df)
-                self.feature_columns.extend(self.smc.get_feature_names())
+            df = df.copy()  # Prevent modifications to original DataFrame
 
-            if "order_blocks" in include_features:
-                df = self.order_blocks.calculate_features(df)
-                self.feature_columns.extend(self.order_blocks.get_feature_names())
+            feature_calculators = {
+                "smc": (self.smc, self.smc.get_feature_names()),
+                "order_blocks": (
+                    self.order_blocks,
+                    self.order_blocks.get_feature_names(),
+                ),
+                "volume_profile": (
+                    self.volume_profile,
+                    self.volume_profile.get_feature_names(),
+                ),
+                "market_structure": (
+                    self.market_structure,
+                    self.market_structure.get_feature_names(),
+                ),
+                "liquidity": (self.liquidity, self.liquidity.get_feature_names()),
+            }
 
-            if "volume_profile" in include_features:
-                df = self.volume_profile.calculate_features(df)
-                self.feature_columns.extend(self.volume_profile.get_feature_names())
+            self.feature_columns = []  # Reset feature columns
 
-            if "market_structure" in include_features:
-                df = self.market_structure.calculate_features(df)
-                self.feature_columns.extend(self.market_structure.get_feature_names())
+            for feature in include_features:
+                if feature not in feature_calculators:
+                    logger.warning(f"Unknown feature type: {feature}")
+                    continue
 
-            if "liquidity" in include_features:
-                df = self.liquidity.calculate_features(df)
-                self.feature_columns.extend(self.liquidity.get_feature_names())
+                calculator, feature_names = feature_calculators[feature]
+                df = calculator.calculate_features(df)
+                self.feature_columns.extend(feature_names)
 
             # Log calculation metadata
-            calculation_time = (datetime.utcnow() - calculation_start).total_seconds()
-            self.utils.log_calculation_metadata(
-                "all_features",
-                calculation_time,
-                {"included_features": include_features},
+            calculation_time = (
+                datetime.now(timezone.utc) - calculation_start
+            ).total_seconds()
+            self._log_calculation_metadata(
+                operation="all_features",
+                calculation_time=calculation_time,
+                metadata={"included_features": include_features},
             )
+
+            # Update cache if enabled
+            if use_cache:
+                self._update_cache(cache_key, df)
 
             return df
 
@@ -119,7 +136,16 @@ class FeatureCalculator:
     def get_feature_snapshot(
         self, df: pd.DataFrame, timestamp: Optional[datetime] = None
     ) -> Dict:
-        """Get snapshot of all features at specific timestamp"""
+        """
+        Get snapshot of all features at specific timestamp
+
+        Args:
+            df: DataFrame with calculated features
+            timestamp: Specific timestamp for snapshot, latest if None
+
+        Returns:
+            Dictionary containing feature snapshot
+        """
         try:
             # Use latest timestamp if none provided
             if timestamp is None:
@@ -129,20 +155,19 @@ class FeatureCalculator:
 
             snapshot = {
                 "metadata": {
-                    "timestamp": row.name,
-                    "captured_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-                    "captured_by": __author__,
+                    "timestamp": row.name.strftime("%Y-%m-%d %H:%M:%S")
+                    if hasattr(row.name, "strftime")
+                    else str(row.name),
+                    "captured_at": TradingConfig.get_current_timestamp(),
+                    "captured_by": TradingConfig.AUTHOR,
+                    "version": TradingConfig.VERSION,
                 },
                 "features": {
-                    "smart_money": self.smc.get_smc_features(row),
-                    "order_blocks": self.order_blocks.get_ob_features(row),
-                    "volume_profile": self.volume_profile.get_volume_profile_features(
-                        row
-                    ),
-                    "market_structure": self.market_structure.get_market_structure_features(
-                        row
-                    ),
-                    "liquidity": self.liquidity.get_liquidity_features(row),
+                    "smart_money": self.smc.get_feature_snapshot(row),
+                    "order_blocks": self.order_blocks.get_feature_snapshot(row),
+                    "volume_profile": self.volume_profile.get_feature_snapshot(row),
+                    "market_structure": self.market_structure.get_feature_snapshot(row),
+                    "liquidity": self.liquidity.get_feature_snapshot(row),
                 },
                 "technical_levels": self.utils.calculate_technical_levels(df),
             }
@@ -154,9 +179,86 @@ class FeatureCalculator:
             return {}
 
     def get_feature_names(self) -> List[str]:
-        """Get list of all feature names"""
+        """Get list of all calculated feature names"""
         return self.feature_columns
 
     def get_metadata(self) -> Dict:
         """Get calculator metadata"""
-        return self.metadata
+        return {
+            **self.metadata,
+            "last_updated": TradingConfig.get_current_timestamp(),
+            "feature_count": len(self.feature_columns),
+            "features": self.feature_columns,
+        }
+
+    def _generate_cache_key(
+        self, df: pd.DataFrame, features: Optional[List[str]]
+    ) -> str:
+        """Generate unique cache key for DataFrame and feature set"""
+        try:
+            features_str = "_".join(sorted(features)) if features else "all"
+            last_timestamp = (
+                df.index[-1].strftime("%Y%m%d%H%M%S") if len(df) > 0 else "empty"
+            )
+            return f"{features_str}_{last_timestamp}_{len(df)}"
+        except Exception as e:
+            logger.error(f"Error generating cache key: {str(e)}")
+            return datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+
+    def _check_cache(self, cache_key: str) -> bool:
+        """Check if valid cached calculation exists"""
+        try:
+            if cache_key not in self._cache or cache_key not in self._cache_expiry:
+                return False
+
+            now = datetime.now(timezone.utc).timestamp()
+            return now < self._cache_expiry[cache_key]
+        except Exception as e:
+            logger.error(f"Error checking cache: {str(e)}")
+            return False
+
+    def _update_cache(self, cache_key: str, df: pd.DataFrame) -> None:
+        """Update cache with new calculation results"""
+        try:
+            self._cache[cache_key] = df
+            self._cache_expiry[cache_key] = (
+                datetime.now(timezone.utc).timestamp() + self.CACHE_DURATION
+            )
+
+            # Clean expired cache entries
+            self._clean_cache()
+        except Exception as e:
+            logger.error(f"Error updating cache: {str(e)}")
+
+    def _clean_cache(self) -> None:
+        """Remove expired cache entries"""
+        try:
+            now = datetime.now(timezone.utc).timestamp()
+            expired_keys = [k for k, v in self._cache_expiry.items() if v < now]
+
+            for k in expired_keys:
+                self._cache.pop(k, None)
+                self._cache_expiry.pop(k, None)
+        except Exception as e:
+            logger.error(f"Error cleaning cache: {str(e)}")
+
+    def _log_calculation_metadata(
+        self, operation: str, calculation_time: float, metadata: Dict
+    ) -> None:
+        """Log feature calculation metadata"""
+        try:
+            log_entry = {
+                "operation": operation,
+                "calculation_time": calculation_time,
+                "timestamp": TradingConfig.get_current_timestamp(),
+                "version": TradingConfig.VERSION,
+                **metadata,
+            }
+
+            log_file = TradingConfig.LOG_DIR / "feature_calculations.jsonl"
+
+            with open(log_file, "a") as f:
+                f.write(f"{log_entry}\n")
+
+        except Exception as e:
+            logger.error(f"Error logging calculation metadata: {str(e)}")
