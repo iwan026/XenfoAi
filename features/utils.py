@@ -46,16 +46,7 @@ class FeatureUtils:
         }
 
     def validate_dataframe(self, df: pd.DataFrame, required_columns: List[str]) -> bool:
-        """
-        Validate DataFrame structure and content
-
-        Args:
-            df: DataFrame to validate
-            required_columns: List of required column names
-
-        Returns:
-            bool: True if validation passes
-        """
+        """Validate DataFrame structure and content"""
         try:
             # Check if DataFrame is empty
             if df.empty:
@@ -68,12 +59,27 @@ class FeatureUtils:
                 logger.error(f"Missing required columns: {missing_columns}")
                 return False
 
-            # Check for NaN values
+            # Check for NaN values and attempt to fix
+            for col in required_columns:
+                if df[col].isna().any():
+                    logger.warning(
+                        f"NaN values found in column: {col}, attempting to fix"
+                    )
+                    if col in ["volume", "tick_volume"]:
+                        # For volume columns, forward fill and ensure positive values
+                        df[col] = df[col].fillna(method="ffill").fillna(1.0)
+                        if (df[col] <= 0).any():
+                            df[col] = df[col].clip(lower=1.0)
+                    else:
+                        # For other columns, forward fill
+                        df[col] = df[col].fillna(method="ffill")
+
+            # Verify fixes worked
             nan_columns = (
                 df[required_columns].columns[df[required_columns].isna().any()].tolist()
             )
             if nan_columns:
-                logger.error(f"NaN values found in columns: {nan_columns}")
+                logger.error(f"Unable to fix NaN values in columns: {nan_columns}")
                 return False
 
             # Check index

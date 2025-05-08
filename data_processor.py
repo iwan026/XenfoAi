@@ -75,10 +75,19 @@ class ForexDataProcessor:
                 logger.error(f"Invalid timeframe: {timeframe}")
                 return None
 
-            # Fetch data
-            rates = mt5.copy_rates_from_pos(
-                symbol, timeframe_map[timeframe], 0, num_candles
-            )
+            # Fetch data with retry mechanism
+            max_retries = 3
+            for attempt in range(max_retries):
+                rates = mt5.copy_rates_from_pos(
+                    symbol, timeframe_map[timeframe], 0, num_candles
+                )
+
+                if rates is not None and len(rates) > 0:
+                    break
+
+                logger.warning(
+                    f"Attempt {attempt + 1}/{max_retries} failed to get data"
+                )
 
             if rates is None or len(rates) == 0:
                 logger.error(f"Failed to get data for {symbol}")
@@ -89,10 +98,25 @@ class ForexDataProcessor:
             df["time"] = pd.to_datetime(df["time"], unit="s")
             df.set_index("time", inplace=True)
 
-            # Optimize tick volume before further processing
+            # Verify required columns
+            required_columns = ["open", "high", "low", "close", "tick_volume"]
+            for col in required_columns:
+                if col not in df.columns:
+                    logger.error(f"Missing required column: {col}")
+                    return None
+                if df[col].isna().any():
+                    logger.error(f"NaN values found in column: {col}")
+                    df[col] = df[col].fillna(method="ffill")  # Forward fill NaN values
+
+            # Optimize tick volume and create volume column
             df = self.optimize_tick_volume(df)
 
-            # Process data with new feature module
+            # Verify volume column after optimization
+            if "volume" not in df.columns or df["volume"].isna().any():
+                logger.error("Volume column invalid after optimization")
+                return None
+
+            # Process data with feature module
             df = self.process_market_data(df)
 
             return df
@@ -106,47 +130,57 @@ class ForexDataProcessor:
     def optimize_tick_volume(self, df: pd.DataFrame) -> pd.DataFrame:
         """Optimize tick volume data for forex pairs"""
         try:
-            # Use tick volume as base
-            if "tick_volume" in df.columns:
-                # Normalize tick volume using rolling statistics
-                period = 14  # Adjustable period
+            # Ensure tick_volume exists
+            if "tick_volume" not in df.columns:
+                logger.error("tick_volume column not found")
+                return df
 
-                # Calculate rolling mean and std of tick volume
-                tick_vol_ma = df["tick_volume"].rolling(window=period).mean()
-                tick_vol_std = df["tick_volume"].rolling(window=period).std()
+            # Handle any NaN values in tick_volume
+            df["tick_volume"] = df["tick_volume"].fillna(method="ffill")
 
-                # Normalize tick volume
-                df["normalized_volume"] = (
-                    df["tick_volume"] - tick_vol_ma
-                ) / tick_vol_std
+            period = 14  # Adjustable period
 
-                # Apply exponential smoothing to reduce noise
-                df["smoothed_volume"] = (
-                    df["normalized_volume"].ewm(span=period, adjust=False).mean()
-                )
+            # Calculate rolling mean and std of tick volume
+            tick_vol_ma = df["tick_volume"].rolling(window=period, min_periods=1).mean()
+            tick_vol_std = df["tick_volume"].rolling(window=period, min_periods=1).std()
 
-                # Scale to positive values and multiply by price movement
-                df["optimized_volume"] = (
-                    df["smoothed_volume"] - df["smoothed_volume"].min() + 1
-                ) * ((df["high"] - df["low"]) / df["close"])
+            # Handle zero/NaN standard deviation
+            tick_vol_std = tick_vol_std.replace(0, 1)
 
-                # Replace volume with optimized tick volume
-                df["volume"] = df["optimized_volume"]
+            # Normalize tick volume
+            df["normalized_volume"] = (df["tick_volume"] - tick_vol_ma) / tick_vol_std
 
-                # Cleanup temporary columns
-                df = df.drop(
-                    ["normalized_volume", "smoothed_volume", "optimized_volume"], axis=1
-                )
+            # Apply exponential smoothing to reduce noise
+            df["smoothed_volume"] = (
+                df["normalized_volume"]
+                .ewm(span=period, adjust=False, min_periods=1)
+                .mean()
+            )
 
-            else:
-                logger.warning("Tick volume data not available, using synthetic volume")
-                # Create synthetic volume based on price movement if no tick volume
-                df["volume"] = ((df["high"] - df["low"]) * 1000).round()
+            # Scale to positive values and multiply by price movement
+            price_range = (df["high"] - df["low"]).replace(
+                0, df["close"] * 0.0001
+            )  # Avoid division by zero
+            df["volume"] = (df["smoothed_volume"] - df["smoothed_volume"].min() + 1) * (
+                (df["high"] - df["low"]) / price_range
+            )
+
+            # Ensure volume is positive and non-zero
+            df["volume"] = df["volume"].abs()
+            min_volume = 1.0
+            df["volume"] = df["volume"].clip(lower=min_volume)
+
+            # Clean up temporary columns
+            df = df.drop(["normalized_volume", "smoothed_volume"], axis=1)
 
             return df
 
         except Exception as e:
             logger.error(f"Error optimizing tick volume: {str(e)}")
+            # Return DataFrame with basic volume calculation if optimization fails
+            df["volume"] = (
+                df["tick_volume"].fillna(method="ffill").abs().clip(lower=1.0)
+            )
             return df
 
     def process_market_data(self, df: pd.DataFrame) -> pd.DataFrame:
