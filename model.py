@@ -1,4 +1,5 @@
 import os
+import json
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.models import Model
@@ -93,7 +94,10 @@ class ForexSignalModel:
             if self.model is None:
                 self.build_model(X_train.shape[1], X_train.shape[2])
 
-            # Create callbacks
+            # Get model directory path
+            model_dir = os.path.dirname(TradingConfig.get_model_path(symbol, timeframe))
+
+            # Create callbacks with corrected file paths
             callbacks = [
                 EarlyStopping(
                     monitor="val_loss", patience=10, restore_best_weights=True
@@ -102,10 +106,16 @@ class ForexSignalModel:
                     monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6
                 ),
                 ModelCheckpoint(
-                    TradingConfig.get_model_path(symbol, timeframe),
+                    filepath=os.path.join(model_dir, "weights.weights.h5"),
                     monitor="val_loss",
                     save_best_only=True,
                     save_weights_only=True,
+                ),
+                ModelCheckpoint(
+                    filepath=os.path.join(model_dir, "model.h5"),
+                    monitor="val_loss",
+                    save_best_only=True,
+                    save_weights_only=False,  # Save full model
                 ),
             ]
 
@@ -114,8 +124,8 @@ class ForexSignalModel:
                 X_train,
                 y_train,
                 validation_data=(X_val, y_val),
-                epochs=100,
-                batch_size=32,
+                epochs=TradingConfig.MODEL_PARAMS.epochs,
+                batch_size=TradingConfig.MODEL_PARAMS.batch_size,
                 callbacks=callbacks,
                 verbose=1,
             )
@@ -123,13 +133,38 @@ class ForexSignalModel:
             # Store best weights
             self._best_weights = self.model.get_weights()
 
-            # Save model and metadata
-            self._save_model(symbol, timeframe)
+            # Save model metadata
+            self._save_model_metadata(symbol, timeframe)
 
             return True
 
         except Exception as e:
             logger.error(f"Error training model: {str(e)}")
+            return False
+
+    def _save_model_metadata(self, symbol: str, timeframe: str) -> bool:
+        """Save model metadata and configuration"""
+        try:
+            model_dir = os.path.dirname(TradingConfig.get_model_path(symbol, timeframe))
+
+            # Save model architecture
+            config_path = os.path.join(model_dir, "model_config.json")
+            with open(config_path, "w") as f:
+                f.write(str(self.model.get_config()))
+
+            # Save training history
+            history_path = os.path.join(model_dir, "training_history.json")
+            with open(history_path, "w") as f:
+                history_dict = {
+                    k: [float(x) for x in v] for k, v in self.history.history.items()
+                }
+                json.dump(history_dict, f, indent=4)
+
+            logger.info(f"Model metadata saved successfully for {symbol}_{timeframe}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error saving model metadata: {str(e)}")
             return False
 
     def generate_signal(
