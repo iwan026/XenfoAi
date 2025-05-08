@@ -17,14 +17,12 @@ class TechnicalLevelParameters:
 
     # Price Levels
     pivot_period: int = 20  # Period for pivot point calculation
-    fibonacci_levels: List[float] = (  # Fibonacci retracement levels
-        lambda: [0.236, 0.382, 0.5, 0.618, 0.786]
-    )()
+    fibonacci_levels: List[float] = field(
+        default_factory=lambda: [0.236, 0.382, 0.5, 0.618, 0.786]
+    )
 
     # Moving Averages
-    ma_periods: List[int] = (  # Periods for moving averages
-        lambda: [20, 50, 100, 200]
-    )()
+    ma_periods: List[int] = field(default_factory=lambda: [20, 50, 100, 200])
 
     # Volatility
     atr_period: int = 14  # Period for ATR calculation
