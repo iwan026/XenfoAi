@@ -176,16 +176,20 @@ class VolumeProfileAnalyzer:
     def _calculate_volume_delta(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate Volume Delta metrics using optimized tick volume"""
         try:
-            # Calculate buying and selling volume
+            # Calculate buying and selling volume based on optimized tick volume
             df["buy_volume"] = np.where(
                 df["close"] > df["open"],
-                df["volume"] * (df["close"] - df["open"]) / (df["high"] - df["low"]),
+                df["tick_volume"]
+                * (df["close"] - df["open"])
+                / (df["high"] - df["low"]),
                 0,
             )
 
             df["sell_volume"] = np.where(
                 df["close"] < df["open"],
-                df["volume"] * (df["open"] - df["close"]) / (df["high"] - df["low"]),
+                df["tick_volume"]
+                * (df["open"] - df["close"])
+                / (df["high"] - df["low"]),
                 0,
             )
 
@@ -193,7 +197,7 @@ class VolumeProfileAnalyzer:
             df["volume_delta"] = (
                 df["buy_volume"].rolling(self.params.delta_period).sum()
                 - df["sell_volume"].rolling(self.params.delta_period).sum()
-            ) / df["volume"].rolling(self.params.delta_period).sum()
+            ) / df["tick_volume"].rolling(self.params.delta_period).sum()
 
             # Calculate delta strength considering price movement
             df["delta_strength"] = abs(df["volume_delta"]) * (
@@ -205,6 +209,36 @@ class VolumeProfileAnalyzer:
         except Exception as e:
             logger.error(f"Error calculating Volume Delta: {str(e)}")
             return df
+
+
+def _analyze_acceptance_rejection(self, df: pd.DataFrame) -> pd.DataFrame:
+    """Analyze price acceptance and rejection zones"""
+    try:
+        window = self.params.rejection_period
+
+        # Calculate price movement persistence
+        df["price_persistence"] = (
+            (df["close"] - df["close"].shift(window)) / df["close"].shift(window)
+        ).abs()
+
+        # Calculate volume contribution using tick volume
+        df["volume_contribution"] = (
+            df["tick_volume"] / df["tick_volume"].rolling(window).sum()
+        )
+
+        # Calculate price acceptance
+        df["price_acceptance"] = np.where(
+            (df["price_persistence"] < self.params.acceptance_threshold)
+            & (df["volume_contribution"] > self.params.min_volume_threshold),
+            1,
+            0,
+        )
+
+        return df
+
+    except Exception as e:
+        logger.error(f"Error analyzing acceptance/rejection: {str(e)}")
+        return df
 
     def _analyze_acceptance_rejection(self, df: pd.DataFrame) -> pd.DataFrame:
         """Analyze price acceptance and rejection zones"""

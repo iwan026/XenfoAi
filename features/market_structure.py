@@ -163,7 +163,7 @@ class MarketStructureAnalyzer:
             return df
 
     def _identify_support_resistance(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Identify support and resistance levels"""
+        """Identify support and resistance levels using tick volume"""
         try:
             lookback = self.params.sr_lookback
 
@@ -211,10 +211,15 @@ class MarketStructureAnalyzer:
                 default=current_price,
             )
 
-            # Calculate S/R strength
+            # Calculate S/R strength using tick volume
             df["sr_strength"] = (
-                df["volume"].rolling(lookback).mean()
-                / df["volume"].rolling(lookback).std()
+                df["tick_volume"].rolling(lookback).mean()
+                / df["tick_volume"].rolling(lookback).std()
+            )
+
+            # Add volume confirmation using tick volume
+            df["sr_volume_confirm"] = (
+                df["tick_volume"] > df["tick_volume"].rolling(lookback).mean() * 1.5
             )
 
             # Clean up
@@ -227,10 +232,13 @@ class MarketStructureAnalyzer:
             return df
 
     def _detect_structure_breaks(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Detect market structure breaks"""
+        """Detect market structure breaks using tick volume confirmation"""
         try:
             threshold = self.params.structure_break_threshold
             confirmation = self.params.confirmation_candles
+
+            # Calculate tick volume moving average for confirmation
+            df["volume_ma"] = df["tick_volume"].rolling(confirmation).mean()
 
             # Identify potential breaks
             df["higher_high"] = df["high"] > df["high"].rolling(
@@ -239,10 +247,16 @@ class MarketStructureAnalyzer:
 
             df["lower_low"] = df["low"] < df["low"].rolling(confirmation).min().shift(1)
 
-            # Confirm breaks with size threshold
+            # Confirm breaks with size threshold and volume confirmation
             df["structure_break"] = (
-                df["higher_high"] & (df["high"] - df["high"].shift(1)) > threshold
-            ) | (df["lower_low"] & (df["low"].shift(1) - df["low"]) > threshold)
+                df["higher_high"] & (df["high"] - df["high"].shift(1))
+                > threshold
+                & (df["tick_volume"] > df["volume_ma"] * 1.2)  # Volume confirmation
+            ) | (
+                df["lower_low"] & (df["low"].shift(1) - df["low"])
+                > threshold
+                & (df["tick_volume"] > df["volume_ma"] * 1.2)  # Volume confirmation
+            )
 
             # Determine break direction
             df["break_direction"] = np.where(
@@ -255,16 +269,26 @@ class MarketStructureAnalyzer:
                 ),
             )
 
-            # Calculate break strength
+            # Calculate break strength with volume influence
             df["break_strength"] = np.where(
                 df["structure_break"],
-                abs(df["close"] - df["close"].shift(confirmation))
-                / df["close"].shift(confirmation),
+                (
+                    abs(df["close"] - df["close"].shift(confirmation))
+                    / df["close"].shift(confirmation)
+                )
+                * (df["tick_volume"] / df["volume_ma"]),  # Volume impact factor
                 0,
             )
 
-            # Clean up
-            df = df.drop(["higher_high", "lower_low"], axis=1)
+            # Add break quality measure
+            df["break_quality"] = np.where(
+                df["structure_break"],
+                df["break_strength"] * (df["tick_volume"] / df["volume_ma"]),
+                0,
+            )
+
+            # Clean up temporary columns
+            df = df.drop(["higher_high", "lower_low", "volume_ma"], axis=1)
 
             return df
 

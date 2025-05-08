@@ -202,20 +202,22 @@ class LiquidityAnalyzer:
             return df
 
     def _analyze_order_flow(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Analyze order flow with optimized tick volume"""
+        """Analyze order flow using tick volume"""
         try:
             window = self.params.flow_window
 
-            # Calculate buying and selling pressure
+            # Calculate buying and selling pressure using tick volume
             df["buy_volume"] = np.where(
                 df["close"] > df["open"],
-                df["volume"] * ((df["close"] - df["open"]) / (df["high"] - df["low"])),
+                df["tick_volume"]
+                * ((df["close"] - df["open"]) / (df["high"] - df["low"])),
                 0,
             )
 
             df["sell_volume"] = np.where(
                 df["close"] < df["open"],
-                df["volume"] * ((df["open"] - df["close"]) / (df["high"] - df["low"])),
+                df["tick_volume"]
+                * ((df["open"] - df["close"]) / (df["high"] - df["low"])),
                 0,
             )
 
@@ -224,11 +226,11 @@ class LiquidityAnalyzer:
 
             df["buy_pressure"] = (df["buy_volume"] * price_impact).rolling(
                 window
-            ).sum() / (df["volume"] * price_impact).rolling(window).sum()
+            ).sum() / (df["tick_volume"] * price_impact).rolling(window).sum()
 
             df["sell_pressure"] = (df["sell_volume"] * price_impact).rolling(
                 window
-            ).sum() / (df["volume"] * price_impact).rolling(window).sum()
+            ).sum() / (df["tick_volume"] * price_impact).rolling(window).sum()
 
             # Calculate flow imbalance
             df["flow_imbalance"] = abs(df["buy_pressure"] - df["sell_pressure"])
@@ -243,19 +245,23 @@ class LiquidityAnalyzer:
             return df
 
     def _estimate_market_depth(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Estimate market depth metrics"""
+        """Estimate market depth metrics using tick volume"""
         try:
             levels = self.params.depth_levels
             threshold = self.params.depth_volume_threshold
 
-            # Calculate volume at different price levels
+            # Calculate volume at different price levels using tick volume
             df["price_buckets"] = pd.qcut(
                 df["close"], q=levels, labels=False, duplicates="drop"
             )
 
             # Calculate depth metrics
-            df["depth_volume"] = df.groupby("price_buckets")["volume"].transform("sum")
-            df["depth_ratio"] = df["depth_volume"] / df["volume"].rolling(levels).mean()
+            df["depth_volume"] = df.groupby("price_buckets")["tick_volume"].transform(
+                "sum"
+            )
+            df["depth_ratio"] = (
+                df["depth_volume"] / df["tick_volume"].rolling(levels).mean()
+            )
 
             # Calculate depth score
             df["depth_score"] = np.where(
@@ -282,7 +288,7 @@ class LiquidityAnalyzer:
             return df
 
     def _detect_liquidity_gaps(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Detect and analyze liquidity gaps"""
+        """Detect and analyze liquidity gaps using tick volume"""
         try:
             min_size = self.params.min_gap_size
             vol_threshold = self.params.gap_volume_threshold
@@ -290,22 +296,20 @@ class LiquidityAnalyzer:
             # Calculate price gaps
             df["price_gap"] = (df["low"] - df["high"].shift(1)) / df["close"]
 
+            # Calculate tick volume moving average
+            tick_vol_ma = df["tick_volume"].rolling(20).mean()
+
             # Identify significant gaps
             df["liquidity_gap"] = (abs(df["price_gap"]) > min_size) & (
-                df["volume"] < df["volume"].rolling(20).mean() * vol_threshold
+                df["tick_volume"] < tick_vol_ma * vol_threshold
             )
 
-            # Calculate gap characteristics
-            df["gap_size"] = np.where(df["liquidity_gap"], abs(df["price_gap"]), 0)
-
+            # Calculate gap significance
             df["gap_significance"] = np.where(
                 df["liquidity_gap"],
-                df["gap_size"] * (1 - df["volume"] / df["volume"].rolling(20).mean()),
+                abs(df["price_gap"]) * (tick_vol_ma / df["tick_volume"]),
                 0,
             )
-
-            # Clean up
-            df = df.drop(["price_gap"], axis=1)
 
             return df
 

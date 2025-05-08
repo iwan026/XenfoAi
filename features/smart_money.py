@@ -172,18 +172,16 @@ class SmartMoneyFeatures:
             logger.error(f"Error calculating Price Inefficiency: {str(e)}")
             return df
 
-    def _calculate_money_flow(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate Smart Money Flow"""
+    def _calculate_money_flow(self, df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+        """Calculate Smart Money Flow using tick volume"""
         try:
-            period = self.params.flow_period
-
             # Calculate typical price
             df["typical_price"] = (df["high"] + df["low"] + df["close"]) / 3
 
-            # Calculate money flow
+            # Calculate money flow using tick volume
             df["money_flow"] = (
                 df["typical_price"]
-                * df["volume"]
+                * df["tick_volume"]
                 * ((df["close"] - df["open"]) / (df["high"] - df["low"]))
             )
 
@@ -217,6 +215,68 @@ class SmartMoneyFeatures:
         except Exception as e:
             logger.error(f"Error calculating Money Flow: {str(e)}")
             return df
+
+
+def _calculate_smart_money_divergence(self, df: pd.DataFrame) -> pd.DataFrame:
+    """Calculate Smart Money Divergence using tick volume"""
+    try:
+        lookback = self.params.divergence_lookback
+
+        # Calculate price momentum
+        df["price_momentum"] = (df["close"] - df["close"].shift(lookback)) / df[
+            "close"
+        ].shift(lookback)
+
+        # Calculate volume momentum using tick volume
+        df["volume_momentum"] = (
+            df["tick_volume"] - df["tick_volume"].shift(lookback)
+        ) / df["tick_volume"].shift(lookback)
+
+        # Calculate divergence
+        df["price_divergence"] = (
+            df["price_momentum"] * -1 * np.sign(df["volume_momentum"])
+        )
+
+        # Calculate divergence strength
+        df["divergence_strength"] = abs(df["price_momentum"] - df["volume_momentum"])
+
+        # Clean up temporary columns
+        df = df.drop(["price_momentum", "volume_momentum"], axis=1)
+
+        return df
+
+    except Exception as e:
+        logger.error(f"Error calculating Smart Money Divergence: {str(e)}")
+        return df
+
+
+def _calculate_volume_analysis(self, df: pd.DataFrame) -> pd.DataFrame:
+    """Calculate Institutional Volume Analysis using tick volume"""
+    try:
+        period = self.params.volume_ma_period
+        threshold = self.params.volume_threshold
+
+        # Calculate tick volume moving average
+        df["volume_ma"] = df["tick_volume"].rolling(period).mean()
+
+        # Identify institutional volume
+        df["institutional_volume"] = df["tick_volume"] > (df["volume_ma"] * threshold)
+
+        # Calculate volume score
+        df["volume_score"] = (
+            df["tick_volume"]
+            / df["volume_ma"]
+            * np.where(df["close"] > df["open"], 1, -1)
+        )
+
+        # Clean up temporary columns
+        df = df.drop(["volume_ma"], axis=1)
+
+        return df
+
+    except Exception as e:
+        logger.error(f"Error calculating Volume Analysis: {str(e)}")
+        return df
 
     def _calculate_smart_money_divergence(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate Smart Money Divergence"""
