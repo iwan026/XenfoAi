@@ -1,114 +1,81 @@
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
-from sklearn.metrics import confusion_matrix, classification_report
 import logging
 from datetime import datetime, timedelta
-import pyfolio as pf
-from empyrical import (
-    annual_return,
-    annual_volatility,
-    sharpe_ratio,
-    sortino_ratio,
-    max_drawdown,
-    omega_ratio,
-)
+from sklearn.metrics import classification_report, confusion_matrix
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class TradeMetrics:
-    """Container for trade performance metrics"""
+class SignalMetrics:
+    """Container for signal performance metrics"""
 
-    total_trades: int
-    winning_trades: int
-    losing_trades: int
-    win_rate: float
-    profit_factor: float
-    avg_win: float
-    avg_loss: float
-    max_drawdown: float
-    recovery_factor: float
-    risk_reward_ratio: float
-    expectancy: float
-    sharpe_ratio: float
-    sortino_ratio: float
-    calmar_ratio: float
-    omega_ratio: float
+    total_signals: int
+    accuracy: float
+    precision: Dict[str, float]  # Per signal type (BUY, SELL, HOLD)
+    recall: Dict[str, float]  # Per signal type
+    f1_score: Dict[str, float]  # Per signal type
+    avg_confidence: float
+    false_signals: int
+    signal_distribution: Dict[str, int]  # Count of each signal type
+    avg_time_between_signals: float  # In minutes
 
 
 @dataclass
-class Trade:
-    """Container for individual trade information"""
+class Signal:
+    """Container for signal information"""
 
-    entry_time: datetime
-    exit_time: datetime
-    entry_price: float
-    exit_price: float
-    position: str  # 'long' or 'short'
-    size: float
-    pnl: float
-    pip_movement: float
-    hold_time: timedelta
+    timestamp: datetime
+    symbol: str
+    timeframe: str
+    signal_type: str  # BUY, SELL, or HOLD
+    confidence: float
     market_regime: str
-    entry_signal_strength: float
-    exit_signal_strength: float
+    trend_strength: float
+    volatility: float
+    validated: bool = False
+    correct: Optional[bool] = None
 
 
-class ForexModelEvaluator:
-    """Enhanced evaluator for forex trading models"""
+class SignalEvaluator:
+    """Enhanced evaluator for forex signal generation"""
 
-    def __init__(
-        self,
-        initial_balance: float = 10000,
-        risk_per_trade: float = 0.02,
-        pip_value: float = 0.0001,
-    ):
-        self.initial_balance = initial_balance
-        self.risk_per_trade = risk_per_trade
-        self.pip_value = pip_value
-        self.trades: List[Trade] = []
-        self.metrics: Optional[TradeMetrics] = None
+    def __init__(self):
+        self.signals: List[Signal] = []
+        self.metrics: Optional[SignalMetrics] = None
 
-    def evaluate_model(
+    def evaluate_signals(
         self,
         y_true: np.ndarray,
         y_pred: np.ndarray,
-        price_data: pd.DataFrame,
-        signal_probabilities: np.ndarray,
+        confidence_scores: np.ndarray,
+        timestamps: List[datetime],
         market_regimes: List[str],
     ) -> Dict:
-        """Comprehensive model evaluation"""
+        """Comprehensive signal evaluation"""
         try:
-            # Classification metrics
+            # Basic classification metrics
             class_metrics = self._calculate_classification_metrics(y_true, y_pred)
 
-            # Trading simulation
-            self._simulate_trading(
-                y_pred, price_data, signal_probabilities, market_regimes
+            # Signal quality metrics
+            signal_metrics = self._calculate_signal_metrics(
+                y_true, y_pred, confidence_scores, timestamps, market_regimes
             )
 
-            # Calculate trading metrics
-            trading_metrics = self._calculate_trading_metrics()
-
-            # Risk metrics
-            risk_metrics = self._calculate_risk_metrics()
-
-            # Combine all metrics
+            # Combine metrics
             evaluation_results = {
                 "classification_metrics": class_metrics,
-                "trading_metrics": trading_metrics,
-                "risk_metrics": risk_metrics,
+                "signal_metrics": signal_metrics,
+                "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
             }
 
             return evaluation_results
 
         except Exception as e:
-            logger.error(f"Error in model evaluation: {str(e)}")
+            logger.error(f"Error in signal evaluation: {str(e)}")
             raise
 
     def _calculate_classification_metrics(
@@ -116,23 +83,26 @@ class ForexModelEvaluator:
     ) -> Dict:
         """Calculate classification performance metrics"""
         try:
-            # Basic classification metrics
+            # Calculate confusion matrix
             conf_matrix = confusion_matrix(y_true, y_pred)
-            class_report = classification_report(y_true, y_pred, output_dict=True)
+
+            # Get detailed classification report
+            class_report = classification_report(
+                y_true, y_pred, target_names=["SELL", "BUY", "HOLD"], output_dict=True
+            )
 
             # Calculate per-class metrics
             class_metrics = {}
-            for class_label in np.unique(y_true):
-                mask = y_true == class_label
-                class_metrics[f"class_{class_label}"] = {
-                    "precision": class_report[str(class_label)]["precision"],
-                    "recall": class_report[str(class_label)]["recall"],
-                    "f1-score": class_report[str(class_label)]["f1-score"],
-                    "support": class_report[str(class_label)]["support"],
+            for signal_type in ["SELL", "BUY", "HOLD"]:
+                class_metrics[signal_type] = {
+                    "precision": class_report[signal_type]["precision"],
+                    "recall": class_report[signal_type]["recall"],
+                    "f1-score": class_report[signal_type]["f1-score"],
+                    "support": class_report[signal_type]["support"],
                 }
 
             return {
-                "confusion_matrix": conf_matrix,
+                "confusion_matrix": conf_matrix.tolist(),
                 "classification_report": class_report,
                 "per_class_metrics": class_metrics,
             }
@@ -141,288 +111,211 @@ class ForexModelEvaluator:
             logger.error(f"Error calculating classification metrics: {str(e)}")
             raise
 
-    def _simulate_trading(
+    def _calculate_signal_metrics(
         self,
-        signals: np.ndarray,
-        price_data: pd.DataFrame,
-        probabilities: np.ndarray,
+        y_true: np.ndarray,
+        y_pred: np.ndarray,
+        confidence_scores: np.ndarray,
+        timestamps: List[datetime],
         market_regimes: List[str],
-    ) -> None:
-        """Simulate trading with advanced position sizing and risk management"""
+    ) -> Dict:
+        """Calculate comprehensive signal metrics"""
         try:
-            balance = self.initial_balance
-            position = None
-
-            for i in range(1, len(signals)):
-                current_time = price_data.index[i]
-                current_price = price_data["close"].iloc[i]
-                current_regime = market_regimes[i]
-
-                # Close existing position if signal changes
-                if position and signals[i] != signals[i - 1]:
-                    exit_price = current_price
-                    pnl = self._calculate_trade_pnl(position, exit_price)
-
-                    # Record trade
-                    trade = Trade(
-                        entry_time=position["entry_time"],
-                        exit_time=current_time,
-                        entry_price=position["entry_price"],
-                        exit_price=exit_price,
-                        position=position["type"],
-                        size=position["size"],
-                        pnl=pnl,
-                        pip_movement=self._calculate_pip_movement(
-                            position["entry_price"], exit_price
-                        ),
-                        hold_time=current_time - position["entry_time"],
-                        market_regime=current_regime,
-                        entry_signal_strength=position["entry_probability"],
-                        exit_signal_strength=probabilities[i].max(),
-                    )
-                    self.trades.append(trade)
-
-                    balance += pnl
-                    position = None
-
-                # Open new position if signal is not hold (4)
-                if signals[i] != 4 and not position:
-                    # Calculate position size based on risk
-                    risk_amount = balance * self.risk_per_trade
-                    # Adjust risk based on signal probability
-                    signal_confidence = probabilities[i].max()
-                    adjusted_risk = risk_amount * signal_confidence
-
-                    position_size = self._calculate_position_size(
-                        adjusted_risk, current_price
-                    )
-
-                    position = {
-                        "type": "long" if signals[i] in [2, 3] else "short",
-                        "entry_price": current_price,
-                        "size": position_size,
-                        "entry_time": current_time,
-                        "entry_probability": signal_confidence,
-                    }
-
-        except Exception as e:
-            logger.error(f"Error in trading simulation: {str(e)}")
-            raise
-
-    def _calculate_trading_metrics(self) -> TradeMetrics:
-        """Calculate comprehensive trading metrics"""
-        try:
-            if not self.trades:
-                raise ValueError("No trades to analyze")
-
-            # Basic trade statistics
-            winning_trades = [t for t in self.trades if t.pnl > 0]
-            losing_trades = [t for t in self.trades if t.pnl <= 0]
-
-            # Calculate metrics
-            self.metrics = TradeMetrics(
-                total_trades=len(self.trades),
-                winning_trades=len(winning_trades),
-                losing_trades=len(losing_trades),
-                win_rate=len(winning_trades) / len(self.trades),
-                profit_factor=abs(
-                    sum(t.pnl for t in winning_trades)
-                    / sum(t.pnl for t in losing_trades)
-                )
-                if sum(t.pnl for t in losing_trades) != 0
-                else float("inf"),
-                avg_win=np.mean([t.pnl for t in winning_trades])
-                if winning_trades
-                else 0,
-                avg_loss=np.mean([t.pnl for t in losing_trades])
-                if losing_trades
-                else 0,
-                max_drawdown=self._calculate_max_drawdown(),
-                recovery_factor=self._calculate_recovery_factor(),
-                risk_reward_ratio=self._calculate_risk_reward_ratio(),
-                expectancy=self._calculate_expectancy(),
-                sharpe_ratio=self._calculate_sharpe_ratio(),
-                sortino_ratio=self._calculate_sortino_ratio(),
-                calmar_ratio=self._calculate_calmar_ratio(),
-                omega_ratio=self._calculate_omega_ratio(),
-            )
-
-            return self.metrics
-
-        except Exception as e:
-            logger.error(f"Error calculating trading metrics: {str(e)}")
-            raise
-
-    def _calculate_risk_metrics(self) -> Dict:
-        """Calculate advanced risk metrics"""
-        try:
-            returns = pd.Series([t.pnl for t in self.trades])
-
-            risk_metrics = {
-                "var_95": self._calculate_var(returns, 0.95),
-                "cvar_95": self._calculate_cvar(returns, 0.95),
-                "downside_deviation": self._calculate_downside_deviation(returns),
-                "volatility": returns.std(),
-                "skewness": returns.skew(),
-                "kurtosis": returns.kurtosis(),
-                "tail_ratio": self._calculate_tail_ratio(returns),
+            # Count signals
+            signal_counts = {
+                "BUY": np.sum(y_pred == 1),
+                "SELL": np.sum(y_pred == 0),
+                "HOLD": np.sum(y_pred == 2),
             }
 
-            return risk_metrics
+            # Calculate time between signals
+            signal_times = [
+                t for t, p in zip(timestamps, y_pred) if p != 2
+            ]  # Exclude HOLD
+            if len(signal_times) > 1:
+                time_diffs = [
+                    (t2 - t1).total_seconds() / 60
+                    for t1, t2 in zip(signal_times[:-1], signal_times[1:])
+                ]
+                avg_time_between = np.mean(time_diffs) if time_diffs else 0
+            else:
+                avg_time_between = 0
+
+            # Calculate accuracy metrics
+            correct_signals = np.sum(y_true == y_pred)
+            total_signals = len(y_pred)
+            accuracy = correct_signals / total_signals if total_signals > 0 else 0
+
+            # Calculate metrics per market regime
+            regime_metrics = self._calculate_regime_metrics(
+                y_true, y_pred, market_regimes
+            )
+
+            # Create metrics object
+            self.metrics = SignalMetrics(
+                total_signals=total_signals,
+                accuracy=accuracy,
+                precision={
+                    "BUY": np.mean(y_true[y_pred == 1] == 1) if any(y_pred == 1) else 0,
+                    "SELL": np.mean(y_true[y_pred == 0] == 0)
+                    if any(y_pred == 0)
+                    else 0,
+                    "HOLD": np.mean(y_true[y_pred == 2] == 2)
+                    if any(y_pred == 2)
+                    else 0,
+                },
+                recall={
+                    "BUY": np.sum((y_true == 1) & (y_pred == 1)) / np.sum(y_true == 1)
+                    if any(y_true == 1)
+                    else 0,
+                    "SELL": np.sum((y_true == 0) & (y_pred == 0)) / np.sum(y_true == 0)
+                    if any(y_true == 0)
+                    else 0,
+                    "HOLD": np.sum((y_true == 2) & (y_pred == 2)) / np.sum(y_true == 2)
+                    if any(y_true == 2)
+                    else 0,
+                },
+                f1_score={
+                    signal: 2
+                    * (self.metrics.precision[signal] * self.metrics.recall[signal])
+                    / (self.metrics.precision[signal] + self.metrics.recall[signal])
+                    if (self.metrics.precision[signal] + self.metrics.recall[signal])
+                    > 0
+                    else 0
+                    for signal in ["BUY", "SELL", "HOLD"]
+                },
+                avg_confidence=np.mean(confidence_scores),
+                false_signals=np.sum(y_true != y_pred),
+                signal_distribution=signal_counts,
+                avg_time_between_signals=avg_time_between,
+            )
+
+            return {"metrics": self.metrics.__dict__, "regime_metrics": regime_metrics}
 
         except Exception as e:
-            logger.error(f"Error calculating risk metrics: {str(e)}")
+            logger.error(f"Error calculating signal metrics: {str(e)}")
             raise
 
-    def plot_results(self, save_path: Optional[str] = None) -> None:
-        """Create comprehensive visualization of results"""
+    def _calculate_regime_metrics(
+        self, y_true: np.ndarray, y_pred: np.ndarray, market_regimes: List[str]
+    ) -> Dict:
+        """Calculate metrics per market regime"""
         try:
-            fig = plt.figure(figsize=(20, 15))
+            regime_metrics = {}
+            unique_regimes = set(market_regimes)
 
-            # 1. Equity Curve
-            ax1 = plt.subplot(321)
-            self._plot_equity_curve(ax1)
+            for regime in unique_regimes:
+                regime_mask = np.array(market_regimes) == regime
+                if not any(regime_mask):
+                    continue
 
-            # 2. Drawdown Chart
-            ax2 = plt.subplot(322)
-            self._plot_drawdown(ax2)
+                regime_true = y_true[regime_mask]
+                regime_pred = y_pred[regime_mask]
 
-            # 3. Trade Distribution
-            ax3 = plt.subplot(323)
-            self._plot_trade_distribution(ax3)
+                regime_metrics[regime] = {
+                    "accuracy": np.mean(regime_true == regime_pred),
+                    "signal_count": len(regime_pred),
+                    "signal_distribution": {
+                        "BUY": np.sum(regime_pred == 1),
+                        "SELL": np.sum(regime_pred == 0),
+                        "HOLD": np.sum(regime_pred == 2),
+                    },
+                }
 
-            # 4. Win Rate by Market Regime
-            ax4 = plt.subplot(324)
-            self._plot_regime_analysis(ax4)
-
-            # 5. Monthly Returns Heatmap
-            ax5 = plt.subplot(325)
-            self._plot_monthly_returns(ax5)
-
-            # 6. Risk Metrics
-            ax6 = plt.subplot(326)
-            self._plot_risk_metrics(ax6)
-
-            plt.tight_layout()
-
-            if save_path:
-                plt.savefig(save_path)
-            plt.show()
+            return regime_metrics
 
         except Exception as e:
-            logger.error(f"Error plotting results: {str(e)}")
+            logger.error(f"Error calculating regime metrics: {str(e)}")
             raise
 
-    def generate_report(self, output_path: str) -> None:
-        """Generate comprehensive HTML report"""
+    def add_signal(self, signal: Signal) -> None:
+        """Add a new signal for tracking"""
         try:
-            report = self._create_html_report()
+            self.signals.append(signal)
+            logger.info(f"Added new signal for {signal.symbol} at {signal.timestamp}")
+        except Exception as e:
+            logger.error(f"Error adding signal: {str(e)}")
 
-            with open(output_path, "w") as f:
-                f.write(report)
+    def validate_signal(
+        self, signal: Signal, current_price: float, target_price: float
+    ) -> bool:
+        """Validate a signal based on price movement"""
+        try:
+            if signal.validated:
+                return signal.correct
 
-            logger.info(f"Report generated successfully at {output_path}")
+            price_change = (target_price - current_price) / current_price
+
+            if signal.signal_type == "BUY":
+                signal.correct = price_change > 0.001  # 0.1% movement
+            elif signal.signal_type == "SELL":
+                signal.correct = price_change < -0.001  # -0.1% movement
+            else:  # HOLD
+                signal.correct = abs(price_change) <= 0.001
+
+            signal.validated = True
+            return signal.correct
 
         except Exception as e:
-            logger.error(f"Error generating report: {str(e)}")
-            raise
+            logger.error(f"Error validating signal: {str(e)}")
+            return False
 
-    def _calculate_var(self, returns: pd.Series, confidence: float) -> float:
-        """Calculate Value at Risk"""
-        return np.percentile(returns, (1 - confidence) * 100)
+    def get_signal_statistics(self, timeframe: str = "1D") -> Dict:
+        """Get statistics for signals in specified timeframe"""
+        try:
+            current_time = datetime.utcnow()
+            if timeframe == "1D":
+                start_time = current_time - timedelta(days=1)
+            elif timeframe == "1W":
+                start_time = current_time - timedelta(weeks=1)
+            elif timeframe == "1M":
+                start_time = current_time - timedelta(days=30)
+            else:
+                raise ValueError(f"Invalid timeframe: {timeframe}")
 
-    def _calculate_cvar(self, returns: pd.Series, confidence: float) -> float:
-        """Calculate Conditional Value at Risk"""
-        var = self._calculate_var(returns, confidence)
-        return returns[returns <= var].mean()
-
-    def _calculate_downside_deviation(self, returns: pd.Series) -> float:
-        """Calculate downside deviation"""
-        return np.sqrt(np.mean(np.minimum(returns - returns.mean(), 0) ** 2))
-
-    def _calculate_tail_ratio(self, returns: pd.Series) -> float:
-        """Calculate tail ratio"""
-        return abs(np.percentile(returns, 95)) / abs(np.percentile(returns, 5))
-
-    def _create_html_report(self) -> str:
-        """Create detailed HTML report"""
-        template = """
-        <html>
-        <head>
-            <title>Trading Model Evaluation Report</title>
-            <style>
-                /* Add your CSS styles here */
-            </style>
-        </head>
-        <body>
-            <h1>Trading Model Evaluation Report</h1>
-            <div class="metrics">
-                <h2>Performance Metrics</h2>
-                <!-- Add metrics here -->
-            </div>
-            <div class="charts">
-                <!-- Add base64 encoded charts here -->
-            </div>
-        </body>
-        </html>
-        """
-
-        return template
-
-    def _plot_equity_curve(self, ax: plt.Axes) -> None:
-        """Plot equity curve with drawdown overlay"""
-        equity_curve = self._calculate_equity_curve()
-        ax.plot(equity_curve.index, equity_curve.values)
-        ax.set_title("Equity Curve")
-        ax.grid(True)
-
-    def _plot_drawdown(self, ax: plt.Axes) -> None:
-        """Plot drawdown chart"""
-        drawdown = self._calculate_drawdown_series()
-        ax.fill_between(drawdown.index, drawdown.values, 0, alpha=0.3, color="red")
-        ax.set_title("Drawdown")
-        ax.grid(True)
-
-    def _plot_trade_distribution(self, ax: plt.Axes) -> None:
-        """Plot trade profit/loss distribution"""
-        pnls = [t.pnl for t in self.trades]
-        ax.hist(pnls, bins=50, alpha=0.75)
-        ax.set_title("Trade P&L Distribution")
-        ax.grid(True)
-
-    def _plot_regime_analysis(self, ax: plt.Axes) -> None:
-        """Plot win rate by market regime"""
-        regime_results = pd.DataFrame(
-            [
-                {"regime": t.market_regime, "win": 1 if t.pnl > 0 else 0}
-                for t in self.trades
+            # Filter signals
+            recent_signals = [
+                s for s in self.signals if s.timestamp >= start_time and s.validated
             ]
-        )
-        win_rates = regime_results.groupby("regime")["win"].mean()
-        win_rates.plot(kind="bar", ax=ax)
-        ax.set_title("Win Rate by Market Regime")
-        ax.grid(True)
 
-    def _plot_monthly_returns(self, ax: plt.Axes) -> None:
-        """Plot monthly returns heatmap"""
-        monthly_returns = self._calculate_monthly_returns()
-        sns.heatmap(
-            monthly_returns.pivot_table(
-                index=monthly_returns.index.year,
-                columns=monthly_returns.index.month,
-                values="returns",
-            ),
-            ax=ax,
-            cmap="RdYlGn",
-            center=0,
-        )
-        ax.set_title("Monthly Returns")
+            if not recent_signals:
+                return {}
 
-    def _plot_risk_metrics(self, ax: plt.Axes) -> None:
-        """Plot risk metrics"""
-        risk_metrics = self._calculate_risk_metrics()
-        y_pos = np.arange(len(risk_metrics))
-        ax.barh(y_pos, list(risk_metrics.values()))
-        ax.set_yticks(y_pos)
-        ax.set_yticklabels(list(risk_metrics.keys()))
-        ax.set_title("Risk Metrics")
+            # Calculate statistics
+            stats = {
+                "total_signals": len(recent_signals),
+                "successful_signals": len([s for s in recent_signals if s.correct]),
+                "signal_types": {
+                    "BUY": len([s for s in recent_signals if s.signal_type == "BUY"]),
+                    "SELL": len([s for s in recent_signals if s.signal_type == "SELL"]),
+                    "HOLD": len([s for s in recent_signals if s.signal_type == "HOLD"]),
+                },
+                "avg_confidence": np.mean([s.confidence for s in recent_signals]),
+                "regime_distribution": {},
+            }
+
+            # Calculate success rate
+            stats["success_rate"] = (
+                stats["successful_signals"] / stats["total_signals"]
+                if stats["total_signals"] > 0
+                else 0
+            )
+
+            # Calculate regime distribution
+            for regime in set(s.market_regime for s in recent_signals):
+                regime_signals = [
+                    s for s in recent_signals if s.market_regime == regime
+                ]
+                stats["regime_distribution"][regime] = {
+                    "count": len(regime_signals),
+                    "success_rate": len([s for s in regime_signals if s.correct])
+                    / len(regime_signals)
+                    if regime_signals
+                    else 0,
+                }
+
+            return stats
+
+        except Exception as e:
+            logger.error(f"Error getting signal statistics: {str(e)}")
+            return {}

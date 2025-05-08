@@ -1,387 +1,280 @@
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from typing import Dict, List, Tuple, Optional, Union
+import os
+import json
 import logging
-from datetime import datetime, timezone
-import mplfinance as mpf
-from scipy import stats
-import talib
-from sklearn.preprocessing import StandardScaler
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+from datetime import datetime, timezone, timedelta
+from typing import Dict, List, Optional, Union
+import pandas as pd
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 
-class TradingUtils:
-    """Enhanced utility class for forex trading visualization and analysis"""
+class SignalUtils:
+    """Utility class for signal management and validation"""
 
-    def __init__(self):
-        self.current_user = "iwan026"
-        self.current_time = datetime.strptime(
-            "2025-05-07 08:57:59", "%Y-%m-%d %H:%M:%S"
-        )
-        self.theme = "dark"
-        plt.style.use("dark_background" if self.theme == "dark" else "default")
-
-    def plot_trading_chart(
-        self,
-        df: pd.DataFrame,
-        signals: Optional[List[Dict]] = None,
-        save_path: Optional[str] = None,
-        plot_type: str = "interactive",
-    ) -> None:
-        """Enhanced trading chart visualization"""
+    @staticmethod
+    def setup_logging(log_level: int = logging.INFO) -> None:
+        """Setup logging configuration"""
         try:
-            if plot_type == "interactive":
-                self._plot_interactive_chart(df, signals)
-            else:
-                self._plot_static_chart(df, signals)
+            logging.basicConfig(
+                level=log_level,
+                format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                handlers=[
+                    logging.StreamHandler(),
+                    logging.FileHandler(
+                        f"logs/signal_bot_{datetime.now().strftime('%Y%m%d')}.log"
+                    ),
+                ],
+            )
+        except Exception as e:
+            print(f"Error setting up logging: {str(e)}")
 
-            if save_path:
-                plt.savefig(save_path, bbox_inches="tight", dpi=300)
-                logger.info(f"Chart saved to {save_path}")
+    @staticmethod
+    def format_signal_message(signal_data: Dict) -> str:
+        """Format signal data into a readable message"""
+        try:
+            emoji = (
+                "🟢"
+                if signal_data["signal"] == "BUY"
+                else "🔴"
+                if signal_data["signal"] == "SELL"
+                else "⚪"
+            )
+
+            message = (
+                f"{emoji} *FOREX SIGNAL*\n\n"
+                f"*Symbol:* {signal_data['symbol']}\n"
+                f"*Signal:* {signal_data['signal']}\n"
+                f"*Timeframe:* {signal_data['timeframe']}\n"
+                f"*Confidence:* {signal_data['confidence']:.2%}\n"
+                f"*Time (UTC):* {signal_data['timestamp']}\n"
+                f"*Market Regime:* {signal_data['market_regime']}\n\n"
+                f"_This is not financial advice_"
+            )
+
+            return message
+        except Exception as e:
+            logger.error(f"Error formatting signal message: {str(e)}")
+            return "Error formatting signal message"
+
+    @staticmethod
+    def save_signal_history(signal_data: Dict, base_path: str = "data/signals") -> bool:
+        """Save signal to historical record"""
+        try:
+            # Create signal directory if it doesn't exist
+            signal_dir = (
+                Path(base_path) / signal_data["symbol"] / signal_data["timeframe"]
+            )
+            signal_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create filename with current date
+            current_date = datetime.now(timezone.utc).strftime("%Y%m%d")
+            signal_file = signal_dir / f"signals_{current_date}.json"
+
+            # Load existing signals or create new list
+            if signal_file.exists():
+                with open(signal_file, "r") as f:
+                    signals = json.load(f)
+            else:
+                signals = []
+
+            # Add new signal
+            signals.append(
+                {
+                    **signal_data,
+                    "saved_at": datetime.now(timezone.utc).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    ),
+                }
+            )
+
+            # Save updated signals
+            with open(signal_file, "w") as f:
+                json.dump(signals, f, indent=4)
+
+            return True
 
         except Exception as e:
-            logger.error(f"Error plotting trading chart: {str(e)}")
-            raise
+            logger.error(f"Error saving signal history: {str(e)}")
+            return False
 
-    def _plot_interactive_chart(
-        self, df: pd.DataFrame, signals: Optional[List[Dict]] = None
-    ) -> None:
-        """Create interactive trading chart using Plotly"""
-        # Create figure with secondary y-axis
-        fig = make_subplots(
-            rows=3,
-            cols=1,
-            shared_xaxes=True,
-            vertical_spacing=0.03,
-            row_heights=[0.6, 0.2, 0.2],
-        )
-
-        # Add candlestick
-        fig.add_trace(
-            go.Candlestick(
-                x=df.index,
-                open=df["open"],
-                high=df["high"],
-                low=df["low"],
-                close=df["close"],
-                name="OHLC",
-            ),
-            row=1,
-            col=1,
-        )
-
-        # Add Moving Averages
-        for ma_period in [20, 50, 200]:
-            ma = df["close"].rolling(window=ma_period).mean()
-            fig.add_trace(
-                go.Scatter(x=df.index, y=ma, name=f"MA{ma_period}", line=dict(width=1)),
-                row=1,
-                col=1,
-            )
-
-        # Add Bollinger Bands
-        bb_upper, bb_middle, bb_lower = talib.BBANDS(
-            df["close"], timeperiod=20, nbdevup=2, nbdevdn=2
-        )
-
-        fig.add_trace(
-            go.Scatter(x=df.index, y=bb_upper, name="BB Upper", line=dict(dash="dash")),
-            row=1,
-            col=1,
-        )
-
-        fig.add_trace(
-            go.Scatter(
-                x=df.index,
-                y=bb_lower,
-                name="BB Lower",
-                line=dict(dash="dash"),
-                fill="tonexty",
-            ),
-            row=1,
-            col=1,
-        )
-
-        # Add RSI
-        fig.add_trace(go.Scatter(x=df.index, y=df["rsi"], name="RSI"), row=2, col=1)
-
-        # Add RSI levels
-        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-
-        # Add MACD
-        fig.add_trace(go.Scatter(x=df.index, y=df["macd"], name="MACD"), row=3, col=1)
-
-        fig.add_trace(
-            go.Scatter(x=df.index, y=df["macd_signal"], name="Signal"), row=3, col=1
-        )
-
-        # Add signals if provided
-        if signals:
-            for signal in signals:
-                signal_time = pd.to_datetime(signal["timestamp"])
-                if signal_time in df.index:
-                    color = "green" if signal["signal"] == "BUY" else "red"
-                    fig.add_vline(
-                        x=signal_time, line_color=color, opacity=0.5, row=1, col=1
-                    )
-
-        # Update layout
-        fig.update_layout(
-            title=f"Trading Chart - {self.current_time}",
-            yaxis_title="Price",
-            yaxis2_title="RSI",
-            yaxis3_title="MACD",
-            xaxis_rangeslider_visible=False,
-            height=800,
-        )
-
-        fig.show()
-
-    def _plot_static_chart(
-        self, df: pd.DataFrame, signals: Optional[List[Dict]] = None
-    ) -> None:
-        """Create static trading chart using mplfinance"""
-        # Prepare data for mplfinance
-        df_plot = df.copy()
-        df_plot.index.name = "Date"
-
-        # Define style
-        mc = mpf.make_marketcolors(
-            up="green",
-            down="red",
-            edge="inherit",
-            wick="inherit",
-            volume="in",
-            ohlc="inherit",
-        )
-
-        s = mpf.make_mpf_style(marketcolors=mc, gridstyle="dotted", y_on_right=False)
-
-        # Create subplots
-        fig, axlist = mpf.plot(
-            df_plot,
-            type="candle",
-            style=s,
-            volume=True,
-            figsize=(12, 8),
-            panel_ratios=(6, 2, 2),
-            addplot=self._create_indicator_subplots(df),
-            returnfig=True,
-        )
-
-        # Add signals if provided
-        if signals:
-            ax = axlist[0]
-            for signal in signals:
-                signal_time = pd.to_datetime(signal["timestamp"])
-                if signal_time in df.index:
-                    color = "green" if signal["signal"] == "BUY" else "red"
-                    ax.axvline(x=signal_time, color=color, alpha=0.5)
-
-        plt.tight_layout()
-
-    def _create_indicator_subplots(self, df: pd.DataFrame) -> List:
-        """Create technical indicator subplots for mplfinance"""
-        subplot_indicators = []
-
-        # Add Moving Averages
-        for ma_period in [20, 50, 200]:
-            ma = df["close"].rolling(window=ma_period).mean()
-            subplot_indicators.append(
-                mpf.make_addplot(ma, panel=0, color=f"C{ma_period // 20}")
-            )
-
-        # Add RSI
-        subplot_indicators.append(mpf.make_addplot(df["rsi"], panel=1, color="purple"))
-
-        # Add MACD
-        subplot_indicators.extend(
-            [
-                mpf.make_addplot(df["macd"], panel=2, color="blue"),
-                mpf.make_addplot(df["macd_signal"], panel=2, color="orange"),
-            ]
-        )
-
-        return subplot_indicators
-
-    def analyze_market_conditions(self, df: pd.DataFrame) -> Dict:
-        """Analyze current market conditions"""
+    @staticmethod
+    def load_signal_history(
+        symbol: str, timeframe: str, days: int = 7, base_path: str = "data/signals"
+    ) -> List[Dict]:
+        """Load historical signals for analysis"""
         try:
-            analysis = {
-                "volatility": self._analyze_volatility(df),
-                "trend": self._analyze_trend(df),
-                "momentum": self._analyze_momentum(df),
-                "support_resistance": self._find_support_resistance(df),
-                "correlation": self._analyze_correlation(df),
-                "volume_analysis": self._analyze_volume(df)
-                if "volume" in df.columns
-                else None,
+            signals = []
+            signal_dir = Path(base_path) / symbol / timeframe
+
+            # Calculate date range
+            end_date = datetime.now(timezone.utc)
+            start_date = end_date - timedelta(days=days)
+
+            # Iterate through date range
+            current_date = start_date
+            while current_date <= end_date:
+                signal_file = (
+                    signal_dir / f"signals_{current_date.strftime('%Y%m%d')}.json"
+                )
+
+                if signal_file.exists():
+                    with open(signal_file, "r") as f:
+                        daily_signals = json.load(f)
+                        signals.extend(daily_signals)
+
+                current_date += timedelta(days=1)
+
+            return signals
+
+        except Exception as e:
+            logger.error(f"Error loading signal history: {str(e)}")
+            return []
+
+    @staticmethod
+    def calculate_signal_metrics(signals: List[Dict]) -> Dict:
+        """Calculate metrics from historical signals"""
+        try:
+            if not signals:
+                return {}
+
+            total_signals = len(signals)
+            signal_types = {
+                "BUY": len([s for s in signals if s["signal"] == "BUY"]),
+                "SELL": len([s for s in signals if s["signal"] == "SELL"]),
+                "HOLD": len([s for s in signals if s["signal"] == "HOLD"]),
             }
 
-            return analysis
+            avg_confidence = sum(s["confidence"] for s in signals) / total_signals
 
-        except Exception as e:
-            logger.error(f"Error analyzing market conditions: {str(e)}")
-            raise
+            # Convert timestamps to datetime objects
+            for signal in signals:
+                signal["datetime"] = datetime.strptime(
+                    signal["timestamp"], "%Y-%m-%d %H:%M:%S"
+                )
 
-    def _analyze_volatility(self, df: pd.DataFrame) -> Dict:
-        """Analyze market volatility"""
-        atr = df["atr"].iloc[-1]
-        hist_vol = df["returns"].std() * np.sqrt(252)
+            # Calculate time between signals
+            signals.sort(key=lambda x: x["datetime"])
+            time_diffs = []
+            for i in range(1, len(signals)):
+                diff = (
+                    signals[i]["datetime"] - signals[i - 1]["datetime"]
+                ).total_seconds() / 60
+                time_diffs.append(diff)
 
-        return {
-            "current_atr": atr,
-            "historical_volatility": hist_vol,
-            "volatility_regime": "high"
-            if hist_vol > df["returns"].std() * 2
-            else "normal",
-            "atr_percentile": stats.percentileofscore(df["atr"], atr),
-        }
-
-    def _analyze_trend(self, df: pd.DataFrame) -> Dict:
-        """Analyze market trend"""
-        current_price = df["close"].iloc[-1]
-        sma_200 = df["close"].rolling(200).mean().iloc[-1]
-        adx = df["adx"].iloc[-1]
-
-        return {
-            "trend_direction": "uptrend" if current_price > sma_200 else "downtrend",
-            "trend_strength": "strong" if adx > 25 else "weak",
-            "price_location": {
-                "above_200ma": current_price > sma_200,
-                "above_50ma": current_price > df["close"].rolling(50).mean().iloc[-1],
-                "above_20ma": current_price > df["close"].rolling(20).mean().iloc[-1],
-            },
-        }
-
-    def _analyze_momentum(self, df: pd.DataFrame) -> Dict:
-        """Analyze market momentum"""
-        return {
-            "rsi_condition": "overbought"
-            if df["rsi"].iloc[-1] > 70
-            else "oversold"
-            if df["rsi"].iloc[-1] < 30
-            else "neutral",
-            "macd_signal": "bullish"
-            if df["macd"].iloc[-1] > df["macd_signal"].iloc[-1]
-            else "bearish",
-            "momentum_strength": abs(df["returns"].iloc[-20:].mean()) * 100,
-        }
-
-    def _find_support_resistance(
-        self, df: pd.DataFrame, window: int = 20, threshold: float = 0.02
-    ) -> Dict:
-        """Find support and resistance levels"""
-        highs = df["high"].rolling(window=window, center=True).max()
-        lows = df["low"].rolling(window=window, center=True).min()
-
-        resistance_levels = []
-        support_levels = []
-
-        for i in range(len(df) - window):
-            if highs.iloc[i] == df["high"].iloc[i]:
-                resistance_levels.append(df["high"].iloc[i])
-            if lows.iloc[i] == df["low"].iloc[i]:
-                support_levels.append(df["low"].iloc[i])
-
-        return {
-            "resistance_levels": sorted(set(resistance_levels[-5:])),
-            "support_levels": sorted(set(support_levels[-5:])),
-            "current_range": {
-                "upper": max(resistance_levels[-5:]),
-                "lower": min(support_levels[-5:]),
-            },
-        }
-
-    def _analyze_correlation(self, df: pd.DataFrame) -> Dict:
-        """Analyze correlations between different features"""
-        corr_matrix = df[["close", "volume", "rsi", "macd"]].corr()
-
-        return {
-            "price_volume_corr": corr_matrix.loc["close", "volume"],
-            "price_rsi_corr": corr_matrix.loc["close", "rsi"],
-            "price_macd_corr": corr_matrix.loc["close", "macd"],
-        }
-
-    def _analyze_volume(self, df: pd.DataFrame) -> Dict:
-        """Analyze volume patterns"""
-        avg_volume = df["volume"].rolling(20).mean().iloc[-1]
-        current_volume = df["volume"].iloc[-1]
-
-        return {
-            "volume_trend": "increasing"
-            if current_volume > avg_volume
-            else "decreasing",
-            "volume_strength": current_volume / avg_volume,
-            "volume_consistency": df["volume"].std() / df["volume"].mean(),
-        }
-
-    def calculate_position_size(
-        self,
-        account_balance: float,
-        risk_percentage: float,
-        entry_price: float,
-        stop_loss: float,
-        leverage: float = 100.0,
-    ) -> Dict:
-        """Calculate optimal position size"""
-        try:
-            # Calculate risk amount
-            risk_amount = account_balance * (risk_percentage / 100)
-
-            # Calculate pip value and position size
-            pip_value = 0.0001  # Adjust for JPY pairs
-            pip_risk = abs(entry_price - stop_loss) / pip_value
-
-            # Calculate position size in lots
-            position_size = risk_amount / (pip_risk * 10)  # Standard lot = 100,000
-            position_size = min(position_size, account_balance * leverage / entry_price)
+            avg_time_between = sum(time_diffs) / len(time_diffs) if time_diffs else 0
 
             return {
-                "position_size_lots": position_size,
-                "position_size_units": position_size * 100000,
-                "risk_amount": risk_amount,
-                "margin_required": (position_size * 100000 * entry_price) / leverage,
+                "total_signals": total_signals,
+                "signal_distribution": signal_types,
+                "average_confidence": avg_confidence,
+                "average_time_between_signals": avg_time_between,
+                "signals_per_day": total_signals
+                / ((signals[-1]["datetime"] - signals[0]["datetime"]).days + 1),
             }
 
         except Exception as e:
-            logger.error(f"Error calculating position size: {str(e)}")
-            raise
+            logger.error(f"Error calculating signal metrics: {str(e)}")
+            return {}
 
-    def generate_trading_summary(
-        self, trades: List[Dict], market_analysis: Dict
-    ) -> str:
-        """Generate human-readable trading summary"""
+    @staticmethod
+    def validate_signal_timing(
+        symbol: str, timeframe: str, last_signals: List[Dict], min_interval: int = 5
+    ) -> bool:
+        """Validate if enough time has passed since last signal"""
         try:
-            summary = f"""
-Trading Summary - {self.current_time}
-Generated by: {self.current_user}
+            if not last_signals:
+                return True
 
-Market Analysis:
----------------
-Trend: {market_analysis["trend"]["trend_direction"]} ({market_analysis["trend"]["trend_strength"]})
-Volatility: {market_analysis["volatility"]["volatility_regime"]}
-Momentum: {market_analysis["momentum"]["rsi_condition"]} (RSI), {market_analysis["momentum"]["macd_signal"]} (MACD)
+            current_time = datetime.now(timezone.utc)
+            last_signal_time = datetime.strptime(
+                last_signals[-1]["timestamp"], "%Y-%m-%d %H:%M:%S"
+            ).replace(tzinfo=timezone.utc)
 
-Recent Trades:
--------------
-"""
-            for trade in trades[-5:]:  # Show last 5 trades
-                summary += f"""
-Time: {trade["timestamp"]}
-Type: {trade["type"]}
-Profit/Loss: {trade["pnl"]:.2f}
-Duration: {trade["duration"]}
-"""
-
-            return summary
+            time_diff = (current_time - last_signal_time).total_seconds() / 60
+            return time_diff >= min_interval
 
         except Exception as e:
-            logger.error(f"Error generating trading summary: {str(e)}")
-            raise
+            logger.error(f"Error validating signal timing: {str(e)}")
+            return False
+
+    @staticmethod
+    def generate_signal_report(
+        symbol: str, timeframe: str, signals: List[Dict], report_path: str = "reports"
+    ) -> Optional[str]:
+        """Generate a summary report of signal performance"""
+        try:
+            if not signals:
+                return None
+
+            # Create report directory
+            report_dir = Path(report_path)
+            report_dir.mkdir(parents=True, exist_ok=True)
+
+            # Calculate metrics
+            metrics = SignalUtils.calculate_signal_metrics(signals)
+
+            # Generate report content
+            report = (
+                f"Signal Performance Report\n"
+                f"========================\n"
+                f"Symbol: {symbol}\n"
+                f"Timeframe: {timeframe}\n"
+                f"Period: {signals[0]['timestamp']} to {signals[-1]['timestamp']}\n\n"
+                f"Signal Statistics\n"
+                f"-----------------\n"
+                f"Total Signals: {metrics['total_signals']}\n"
+                f"Signals per Day: {metrics['signals_per_day']:.2f}\n"
+                f"Average Confidence: {metrics['average_confidence']:.2%}\n"
+                f"Average Time Between Signals: {metrics['average_time_between_signals']:.1f} minutes\n\n"
+                f"Signal Distribution\n"
+                f"------------------\n"
+                f"BUY Signals: {metrics['signal_distribution']['BUY']}\n"
+                f"SELL Signals: {metrics['signal_distribution']['SELL']}\n"
+                f"HOLD Signals: {metrics['signal_distribution']['HOLD']}\n"
+            )
+
+            # Save report
+            report_file = (
+                report_dir
+                / f"signal_report_{symbol}_{timeframe}_{datetime.now().strftime('%Y%m%d')}.txt"
+            )
+            with open(report_file, "w") as f:
+                f.write(report)
+
+            return str(report_file)
+
+        except Exception as e:
+            logger.error(f"Error generating signal report: {str(e)}")
+            return None
+
+    @staticmethod
+    def cleanup_old_signals(
+        base_path: str = "data/signals", days_to_keep: int = 30
+    ) -> bool:
+        """Clean up old signal files"""
+        try:
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_to_keep)
+            base_dir = Path(base_path)
+
+            for symbol_dir in base_dir.iterdir():
+                if symbol_dir.is_dir():
+                    for timeframe_dir in symbol_dir.iterdir():
+                        if timeframe_dir.is_dir():
+                            for signal_file in timeframe_dir.glob("signals_*.json"):
+                                try:
+                                    file_date = datetime.strptime(
+                                        signal_file.stem.split("_")[1], "%Y%m%d"
+                                    )
+                                    if file_date < cutoff_date:
+                                        signal_file.unlink()
+                                except Exception as e:
+                                    logger.warning(
+                                        f"Error processing file {signal_file}: {str(e)}"
+                                    )
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error cleaning up old signals: {str(e)}")
+            return False
