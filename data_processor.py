@@ -252,26 +252,47 @@ class ForexDataProcessor:
                 "ema_50",
             ]
 
+            # Ensure all features are numeric and handle missing values
+            for col in feature_columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            df = df.fillna(method="ffill").fillna(method="bfill")
+
+            # Extract features and convert to float32
+            features_df = df[feature_columns].astype(np.float32)
+
             # Scale features
             if not self.is_fitted:
-                self.price_scaler.fit(df[feature_columns])
+                self.price_scaler.fit(features_df)
                 self.is_fitted = True
 
-            scaled_data = self.price_scaler.transform(df[feature_columns])
+            scaled_data = self.price_scaler.transform(features_df)
 
             # Create sequences
             X = []
             timestamps = []
 
-            for i in range(len(df) - lookback_period):
-                X.append(scaled_data[i : (i + lookback_period)])
-                timestamps.append(df.index[i + lookback_period])
+            # Ensure we have enough data for lookback
+            if len(scaled_data) >= lookback_period:
+                for i in range(len(scaled_data) - lookback_period + 1):
+                    sequence = scaled_data[i : (i + lookback_period)]
+                    if len(sequence) == lookback_period:  # Verify sequence length
+                        X.append(sequence)
+                        timestamps.append(df.index[i + lookback_period - 1])
 
-            return np.array(X), timestamps
+            # Convert to numpy array with explicit type
+            X = np.array(X, dtype=np.float32)
+
+            # Validate output
+            if len(X) == 0:
+                logger.warning("No valid sequences could be created")
+                return np.array([], dtype=np.float32), []
+
+            logger.debug(f"Prepared data shape: {X.shape}, dtype: {X.dtype}")
+            return X, timestamps
 
         except Exception as e:
             logger.error(f"Error preparing data for signal: {str(e)}")
-            return np.array([]), []
+            return np.array([], dtype=np.float32), []
 
     def prepare_training_data(
         self, df: pd.DataFrame, lookback_period: int = 60
