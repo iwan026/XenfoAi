@@ -161,6 +161,35 @@ class ForexDataProcessor:
             # Market regime features
             df = self._add_market_regime_features(df)
 
+            # Original processing
+            df = super().process_market_data(df)
+
+            # Add Smart Money Concepts features (from previous implementation)
+            df = self.add_smart_money_features(df)
+
+            # Add Order Block features (from previous implementation)
+            df = self.add_order_block_features(df)
+
+            # Add new features
+            df = self.add_volume_profile_features(df)
+            df = self.add_market_structure_features(df)
+            df = self.add_liquidity_analysis(df)
+
+            # Add new features to feature columns
+            self.feature_columns.extend(
+                [
+                    "poc_strength",
+                    "in_value_area",
+                    "cumulative_delta",
+                    "structure_quality",
+                    "breakout_strength",
+                    "trend_validated",
+                    "liquidity_sweep_up",
+                    "liquidity_sweep_down",
+                    "manipulation_zone",
+                ]
+            )
+
             # Clean up NaN values
             df = df.dropna()
 
