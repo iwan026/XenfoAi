@@ -14,7 +14,15 @@ def user_handler(app):
         await update.message.reply_text(response)
 
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("Halo, selamat datang di XenfoAi")
+        welcome_msg = (
+            "*Selamat datang di XenfoAi!*\n"
+            "Siap bantu kamu dapetin sinyal trading terkini & akurat langsung dari kami.\n"
+            "Dengan bot ini, kamu nggak perlu lagi mantengin chart tiap detik!\n\n"
+            "Ketik /help buat lihat semua menu dan fitur yang tersedia — mulai dari sinyal harian, analisis pasar, sampai notifikasi real-time!\n"
+            "*Stay cuan, stay santai!*\n"
+            "📈🔥💸"
+        )
+        await update.message.reply_text(welcome_msg, parse_mode="Markdown")
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), rule_response))
