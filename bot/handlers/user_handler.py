@@ -11,14 +11,14 @@ def user_handler(app):
     async def rule_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_msg = update.message.text
         response = get_response(user_msg)
-        await update.message.reply_text(response)
+        await update.message.reply_text(response, parse_mode="Markdown")
 
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         welcome_msg = (
             "*Selamat datang di XenfoAi!*\n"
             "Siap bantu kamu dapetin sinyal trading terkini & akurat langsung dari kami.\n"
             "Dengan bot ini, kamu nggak perlu lagi mantengin chart tiap detik!\n\n"
-            "Ketik /help buat lihat semua menu dan fitur yang tersedia — mulai dari sinyal harian, analisis pasar, sampai notifikasi real-time!\n"
+            "Ketik /menu buat lihat semua menu dan fitur yang tersedia — mulai dari sinyal harian, analisis pasar, sampai notifikasi real-time!\n\n"
             "*Stay cuan, stay santai!*\n"
             "📈🔥💸"
         )
