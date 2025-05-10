@@ -18,8 +18,6 @@ class KonfigurasiPath:
     """Konfigurasi untuk mengelola path direktori"""
 
     BASE_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
-    DATA_DIR = BASE_DIR / "data"
-    DATA_FOREX_DIR = DATA_DIR / "forex"
     MODEL_DIR = BASE_DIR / "saved_models"
     FOREX_MODEL_DIR = MODEL_DIR / "forex"
     LOG_DIR = BASE_DIR / "logs"
@@ -37,6 +35,6 @@ class KonfigurasiTelegram:
 
 
 class KonfigurasiMT5:
-    LOGIN = 204313635
-    PASSWORD = "123@Demo"
-    SERVER = "Exness-MT5Trial7"
+    LOGIN = 5035979858
+    PASSWORD = "N@Al6mVk"
+    SERVER = "MetaQuotes-Demo"
