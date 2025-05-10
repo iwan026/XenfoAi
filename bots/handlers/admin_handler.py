@@ -40,16 +40,17 @@ def admin_handler(app):
             f"🔄 Mengambil daya histori {symbol} {timeframe}"
         )
 
-        df = MT5Core.get_historical_data(symbol, timeframe)
+        mt5core = MT5Core()
+        df = mt5core.get_historical_data(symbol, timeframe)
 
         if df is not None:
-            await update.message.reply_text(
+            await update.message.edit_text(
                 f"✅ Data {symbol} {timeframe} berhasil diambil!\n"
                 f"Jumlah baris: {len(df)}\n"
                 f"Periode: {df['time'].iloc[0]} sampai {df['time'].iloc[-1]}"
             )
         else:
-            await update.message.reply_text(
+            await update.message.edit_text(
                 f"❌ Gagal mengambil data {symbol} {timeframe}"
             )
 
