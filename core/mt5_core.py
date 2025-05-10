@@ -72,9 +72,7 @@ class MT5Core:
 
             count = count_map.get(timeframe)
 
-            rates = mt5.copy_rates_from_pos(
-                symbol, timeframe_map[timeframe], 0, count_map[count]
-            )
+            rates = mt5.copy_rates_from_pos(symbol, timeframe_map[timeframe], 0, count)
 
             if rates is None or len(rates) == 0:
                 logger.error(f"Gagal mengambil data histori untuk {symbol} {timeframe}")
