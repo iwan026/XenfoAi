@@ -36,7 +36,7 @@ def admin_handler(app):
         symbol = context.args[0].upper()
         timeframe = context.args[1].upper()
 
-        await update.message.reply_text(
+        sent_message = await update.message.reply_text(
             f"🔄 Mengambil daya histori {symbol} {timeframe}"
         )
 
@@ -44,13 +44,13 @@ def admin_handler(app):
         df = mt5core.get_historical_data(symbol, timeframe)
 
         if df is not None:
-            await update.message.edit_text(
+            await sent_message.edit_text(
                 f"✅ Data {symbol} {timeframe} berhasil diambil!\n"
                 f"Jumlah baris: {len(df)}\n"
                 f"Periode: {df['time'].iloc[0]} sampai {df['time'].iloc[-1]}"
             )
         else:
-            await update.message.edit_text(
+            await sent_message.edit_text(
                 f"❌ Gagal mengambil data {symbol} {timeframe}"
             )
 
