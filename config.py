@@ -37,6 +37,6 @@ class KonfigurasiTelegram:
 
 
 class KonfigurasiMT5:
-    MT5_LOGIN = 204313635
-    MT5_PASSWORD = "123@Demo"
-    MT5_SERVER = "Exness-MT5Trial7"
+    LOGIN = 204313635
+    PASSWORD = "123@Demo"
+    SERVER = "Exness-MT5Trial7"
