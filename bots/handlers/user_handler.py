@@ -2,7 +2,7 @@ import logging
 from telegram import Update
 from telegram.ext import CommandHandler, MessageHandler, ContextTypes, filters
 
-from bot.rules.rule import get_response
+from bots.rules.rule import get_response
 
 logger = logging.getLogger(__name__)
 
