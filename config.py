@@ -18,6 +18,10 @@ class KonfigurasiPath:
     """Konfigurasi untuk mengelola path direktori"""
 
     BASE_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
+    DATASET_DIR = BASE_DIR / "datasets"
+    DATASET_FOREX_DIR = DATASET_DIR / "forex"
+    DATASET_FOREX_RAW_DIR = DATASET_FOREX_DIR / "raw"
+    DATASET_FOREX_PROCESSED_DIR = DATASET_FOREX_DIR / "processed"
     MODEL_DIR = BASE_DIR / "saved_models"
     FOREX_MODEL_DIR = MODEL_DIR / "forex"
     LOG_DIR = BASE_DIR / "logs"
