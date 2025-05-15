@@ -1,5 +1,6 @@
 import os
 import logging
+import MetaTrader5 as mt5
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
