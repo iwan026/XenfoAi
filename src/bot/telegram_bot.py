@@ -9,7 +9,7 @@ from telegram.ext import (
     filters,
 )
 
-from config import BOT_TOKEN, ADMIN_ID, TIMEFRAMES
+from config import BOT_TOKEN, TIMEFRAMES
 from src.models.forex_model import ForexModel
 from src.utils.helpers import (
     setup_logging,
@@ -19,7 +19,7 @@ from src.utils.helpers import (
     get_available_timeframes,
 )
 
-logger = logging.getLogger(__name__)
+logger = setup_logging(__name__)
 
 
 class TelegramBot:
@@ -177,7 +177,7 @@ class TelegramBot:
     ):
         symbols = get_available_symbols()
         if not symbols:
-            await update.message.reply_text(f"❌ Tidak ada pair yang tersedia.")
+            await update.message.reply_text("❌ Tidak ada pair yang tersedia.")
             return
 
         message = "📊 *Pair yang tersedia:*\n\n"
@@ -240,6 +240,7 @@ class TelegramBot:
                 "❓ Saya tidak mengerti pesan Anda.\n"
                 "Gunakan /help untuk melihat perintah yang tersedia."
             )
+
     def run(self):
         """Run bot"""
         logger.info("Starting bot...")
