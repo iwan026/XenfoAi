@@ -1,19 +1,19 @@
+import os
 import logging
-from telegram.ext import ApplicationBuilder
+from src.bot.telegram_bot import TelegramBot
+from src.utils.helpers import setup_logging
 
-import config
-from bots.telegram_bot import TelegramBot
-
-logger = logging.getLogger(__name__)
+logger = setup_logging(__name__)
 
 
 def main():
     try:
         bot = TelegramBot()
-        bot.application.run_polling()
+        logger.info("Bot running...")
+        bot.run()
 
     except Exception as e:
-        logger.error(f"Fatal error: {str(e)}")
+        logger.error(f"Error di main: {str(e)}")
 
 
 if __name__ == "__main__":

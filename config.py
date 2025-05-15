@@ -2,9 +2,6 @@ import os
 import logging
 from pathlib import Path
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
 logger = logging.getLogger(__name__)
 
 # KONFIGURASI PATH
@@ -12,26 +9,33 @@ BASE_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
 DATASET_DIR = BASE_DIR / "datasets"
 MODEL_DIR = BASE_DIR / "models"
 LOG_DIR = BASE_DIR / "logs"
-LOG_FILE = LOG_DIR / "XenfoAi.log"
 
 REQUIRED_DIR = [MODEL_DIR, LOG_DIR]
 for directory in REQUIRED_DIR:
     directory.mkdir(parents=True, exist_ok=True)
 
-# Konfigurasi Sistem
-SEQUENCE_LENGTH = 60
-INPUT_FEATURES = 15
-LEARNING_RATE = 0.001
+# Timeframe MT5
 TIMEFRAMES = {
-    "M1": 1,
-    "M5": 5,
-    "M15": 15,
-    "M30": 30,
-    "H1": 60,
-    "H4": 240,
-    "D1": 1440,
+    "M1": mt5.TIMEFRAME_M1,
+    "M5": mt5.TIMEFRAME_M5,
+    "M15": mt5.TIMEFRAME_M15,
+    "H1": mt5.TIMEFRAME_H1,
+    "H4": mt5.TIMEFRAME_H4,
+    "D1": mt5.TIMEFRAME_D1,
+    "W1": mt5.TIMEFRAME_W1,
 }
-FEATURE_COLUMNS = {
+
+# Konfigurasi Model
+SEQUENCE_LENGTH = 60
+BATCH_SIZE = 32
+EPOCHS = 50
+TRAIN_TEST_SPLIT = 0.2
+
+# Konfigurasi Telegram
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7667262262:AAFYkfcdd8OZQskNYQPJ9KbVO8rGE3rvouI")
+ADMIN_ID = [1198920849]
+
+FEATURE_COLUMNS = [
     "open",
     "high",
     "low",
@@ -47,11 +51,7 @@ FEATURE_COLUMNS = {
     "sma_50",
     "ema_9",
     "ema_21",
-}
-
-# Konfigurasi Telegram
-BOT_TOKEN = "7667262262:AAFYkfcdd8OZQskNYQPJ9KbVO8rGE3rvouI"
-ADMIN_ID = [1198920849]
+]
 
 # Konfigurasi MT5
 MT5_LOGIN = 5035979858
