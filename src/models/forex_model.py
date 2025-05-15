@@ -44,7 +44,7 @@ class ForexModel:
                     tf.keras.layers.LSTM(
                         100,
                         return_sequences=True,
-                        input_shapes=(SEQUENCE_LENGTH, input_features),
+                        input_shape=(SEQUENCE_LENGTH, input_features),
                     ),
                     tf.keras.layers.Dropout(0.2),
                     tf.keras.layers.LSTM(100, return_sequences=False),
