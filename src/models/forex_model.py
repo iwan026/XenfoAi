@@ -91,24 +91,48 @@ class ForexModel:
             df["target"] = (df["close"].shift(-1) > df["close"]).astype(int)
             df.dropna(inplace=True)
 
-            # Buat sequences
-            X, y = [], []
-            for i in range(len(df) - SEQUENCE_LENGTH):
-                X.append(df[FEATURE_COLUMNS].iloc[i : i + SEQUENCE_LENGTH].values)
-                y.append(df["target"].iloc[i + SEQUENCE_LENGTH])
+            # Konversi ke float32 untuk menghemat memori
+            df[FEATURE_COLUMNS] = df[FEATURE_COLUMNS].astype("float32")
 
-            X = np.ndarray(X)
-            y = np.ndarray(y)
+            # Proses data dalam batches
+            batch_size = 1000
+            X, y = [], []
+
+            total_sequences = len(df) - SEQUENCE_LENGTH
+            for i in range(0, total_sequences, batch_size):
+                end_idx = min(i + batch_size, total_sequences)
+
+                # Log progress
+                logger.info(
+                    f"Memproses sequences {i} sampai {end_idx} dari {total_sequences}"
+                )
+
+                batch_X = []
+                batch_y = []
+
+                for j in range(i, end_idx):
+                    sequence = df[FEATURE_COLUMNS].iloc[j : j + SEQUENCE_LENGTH].values
+                    target = df["target"].iloc[j + SEQUENCE_LENGTH]
+
+                    batch_X.append(sequence)
+                    batch_y.append(target)
+
+                X.extend(batch_X)
+                y.extend(batch_y)
+
+            # Konversi ke numpy array dengan tipe data yang efisien
+            X = np.array(X, dtype="float32")
+            y = np.array(y, dtype="float32")
 
             # Normalisasi data
-            X_reshaped = X.reshape(X.shape[0], X.shape[1] * X.shape[2])
+            X_reshaped = X.reshape(X.shape[0], -1)
             X_normalized = self.data_handler.scaler.fit_transform(X_reshaped)
             X = X_normalized.reshape(X.shape)
 
             return X, y
 
         except Exception as e:
-            logger.error(f"Terjadi kesalahan saat prepate data: {e}")
+            logger.error(f"Terjadi kesalahan saat prepare data: {e}")
             raise
 
     def train(self) -> bool:

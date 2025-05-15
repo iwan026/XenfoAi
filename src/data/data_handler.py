@@ -127,8 +127,28 @@ class DataHandler:
                 logger.error(f"File tidak ada: {file_path}")
                 return None
 
-            df = pd.read_csv(file_path, parse_dates=["datetime"], dayfirst=True)
+            # Baca file dalam chunks
+            chunk_size = 5000  # Ukuran chunk bisa disesuaikan
+            chunks = []
+
+            # Gunakan iterator untuk membaca file secara bertahap
+            for chunk in pd.read_csv(
+                file_path, parse_dates=["datetime"], dayfirst=True, chunksize=chunk_size
+            ):
+                # Konversi tipe data untuk menghemat memori
+                for col in chunk.select_dtypes(include=["float64"]).columns:
+                    chunk[col] = chunk[col].astype("float32")
+
+                chunks.append(chunk)
+
+                # Log progress
+                logger.info(f"Membaca {len(chunks) * chunk_size} baris...")
+
+            # Gabungkan semua chunks
+            df = pd.concat(chunks, ignore_index=True)
             df["datetime"] = pd.to_datetime(df["datetime"])
+
+            logger.info(f"Total baris yang dibaca: {len(df)}")
             return df
 
         except Exception as e:
