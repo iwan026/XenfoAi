@@ -7,11 +7,11 @@ logger = logging.getLogger(__name__)
 
 # KONFIGURASI PATH
 BASE_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
-DATASET_DIR = BASE_DIR / "datasets"
+DATASETS_DIR = BASE_DIR / "datasets"
 MODELS_DIR = BASE_DIR / "models"
-LOG_DIR = BASE_DIR / "logs"
+LOGS_DIR = BASE_DIR / "logs"
 
-REQUIRED_DIR = [MODELS_DIR, LOG_DIR]
+REQUIRED_DIR = [MODELS_DIR, LOGS_DIR]
 for directory in REQUIRED_DIR:
     directory.mkdir(parents=True, exist_ok=True)
 
