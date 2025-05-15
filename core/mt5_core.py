@@ -1,6 +1,6 @@
 import MetaTrader5 as mt5
 import pandas as pd
-from config import KonfigurasiMT5, KonfigurasiPath
+import config
 import logging
 import os
 
@@ -11,16 +11,16 @@ class MT5Core:
     def __init__(self):
         self.connected = False
 
-    def initialize_mt5(self) -> bool:
+    def initialize_mt5(self):
         try:
             if not mt5.initialize():
                 logger.error(f"Inisialisasi MetaTrader5 gagal: {mt5.last_error()}")
                 return False
 
             if not mt5.login(
-                login=KonfigurasiMT5.LOGIN,
-                password=KonfigurasiMT5.PASSWORD,
-                server=KonfigurasiMT5.SERVER,
+                login=config.MT5_LOGIN,
+                password=config.MT5_PASSWORD,
+                server=config.MT5_SERVER,
             ):
                 logger.error(f"Login ke MetaTrader5 gagal: {mt5.last_error()}")
                 return False
