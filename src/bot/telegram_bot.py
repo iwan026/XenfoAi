@@ -1,5 +1,3 @@
-import logging
-from typing import Optional
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -175,16 +173,23 @@ class TelegramBot:
     async def list_symbols_command(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
-        symbols = get_available_symbols()
-        if not symbols:
-            await update.message.reply_text("❌ Tidak ada pair yang tersedia.")
-            return
+        try:
+            available_symbols = get_available_symbols()
+            if not available_symbols:
+                await update.message.reply_text("❌ Tidak ada pair yang tersedia.")
+                return
 
-        message = "📊 *Pair yang tersedia:*\n\n"
-        for symbol in sorted(symbols):
-            message += f"• {symbol}\n"
+            message = "📊 *Pair yang tersedia:*\n\n"
+            for symbol in available_symbols:
+                message += f"• {symbol}\n"
 
-        await update.message.reply_text(message, parse_mode="Markdown")
+            await update.message.reply_text(message, parse_mode="Markdown")
+
+        except Exception as e:
+            logger.error(f"Error di list_symbols_command: {str(e)}")
+            await update.message.reply_text(
+                "❌ Terjadi kesalahan saat mengambil daftar pair."
+            )
 
     async def list_timeframes_command(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -200,16 +205,16 @@ class TelegramBot:
                 return
 
             symbol = args[0].upper()
-            timeframes = get_available_timeframes(symbol)
+            available_timeframes = get_available_timeframes(symbol)
 
-            if not timeframes:
+            if not available_timeframes:
                 await update.message.reply_text(
                     f"❌ Tidak ada timeframe tersedia untuk {symbol}."
                 )
                 return
 
             message = f"⏱ *Timeframe tersedia untuk {symbol}:*\n\n"
-            for tf in sorted(timeframes):
+            for tf in available_timeframes:
                 message += f"• {tf}\n"
 
             await update.message.reply_text(message, parse_mode="Markdown")

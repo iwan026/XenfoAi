@@ -1,7 +1,9 @@
 import logging
 from pathlib import Path
 from typing import Dict, List
-from config import LOGS_DIR
+from config import LOGS_DIR, DATASETS_DIR, TIMEFRAMES
+
+logger = logging.getLogger(__name__)
 
 
 def setup_logging(name: str) -> logging.Logger:
@@ -51,22 +53,29 @@ def validate_timeframe(timeframe: str) -> bool:
 
 def get_available_symbols() -> List[str]:
     """Get list of available symbols from dataset directory"""
-    from config import DATASETS_DIR
-
-    return [d.name for d in DATASETS_DIR.iterdir() if d.is_dir()]
+    try:
+        symbols = set()
+        if DATASETS_DIR.exists():
+            symbols = {d.name for d in DATASETS_DIR.iterdir() if d.is_dir()}
+            return sorted(list(symbols))
+    except Exception as e:
+        logger.error(f"Terjadi error saag mengambil data symbol yang tersedia: {e}")
+        return []
 
 
 def get_available_timeframes(symbol: str) -> List[str]:
     """Get list of available timeframes for a symbol"""
-    from config import DATASETS_DIR
+    try:
+        symbol_dir = DATASETS_DIR / symbol.upper()
+        if not symbol_dir.exists():
+            return []
 
-    symbol_dir = DATASETS_DIR / symbol
-    if not symbol_dir.exists():
+        timeframes = set()
+        for file in symbol_dir.glob(f"{symbol.upper()}_*.csv"):
+            tf = file.stem.split("_")[1]
+            if tf in TIMEFRAMES:
+                timeframes.add(tf)
+        return sorted(list(timeframes))
+    except Exception as e:
+        logger.error(f"Terjadi error saat mengambil data timeframe yang tersedia: {e}")
         return []
-
-    timeframes = []
-    for file in symbol_dir.glob(f"{symbol}_*.csv"):
-        timeframe = file.stem.split("_")[1]
-        timeframes.append(timeframe)
-
-    return timeframes
