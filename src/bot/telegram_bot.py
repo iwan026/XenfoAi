@@ -41,7 +41,7 @@ class TelegramBot:
             CommandHandler("timeframes", self.list_timeframes_command)
         )
         self.application.add_handler(
-            MessageHandler(filters.TEXT & -filters.COMMAND, self.handle_message)
+            MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
         )
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
