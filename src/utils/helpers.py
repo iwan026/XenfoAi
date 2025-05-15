@@ -44,21 +44,21 @@ def format_prediction_message(prediction: Dict) -> str:
 
 def validate_timeframe(timeframe: str) -> bool:
     """Validate timeframe input"""
-    from config.config import TIMEFRAMES
+    from config import TIMEFRAMES
 
     return timeframe.upper() in TIMEFRAMES
 
 
 def get_available_symbols() -> List[str]:
     """Get list of available symbols from dataset directory"""
-    from config.config import DATASETS_DIR
+    from config import DATASETS_DIR
 
     return [d.name for d in DATASETS_DIR.iterdir() if d.is_dir()]
 
 
 def get_available_timeframes(symbol: str) -> List[str]:
     """Get list of available timeframes for a symbol"""
-    from config.config import DATASETS_DIR
+    from config import DATASETS_DIR
 
     symbol_dir = DATASETS_DIR / symbol
     if not symbol_dir.exists():
