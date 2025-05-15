@@ -56,7 +56,7 @@ class ForexModel:
 
             self.model.compile(
                 optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-                loss="binary_crossentrophy",
+                loss="binary_crossentropy",
                 metrics=["accuracy"],
             )
 
