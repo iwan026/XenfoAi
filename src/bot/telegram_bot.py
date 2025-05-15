@@ -87,7 +87,7 @@ class TelegramBot:
 
     async def predict_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
-            args = context.args()
+            args = context.args
             if len(args) != 2:
                 await update.message.reply_text(
                     "❌ Format perintah salah.\n"
@@ -131,7 +131,7 @@ class TelegramBot:
 
     async def train_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
-            args = context.args()
+            args = context.args
             if len(args) != 2:
                 await update.message.reply_text(
                     "❌ Format perintah salah.\n"
