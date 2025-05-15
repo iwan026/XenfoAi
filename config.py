@@ -11,7 +11,7 @@ DATASET_DIR = BASE_DIR / "datasets"
 MODELS_DIR = BASE_DIR / "models"
 LOG_DIR = BASE_DIR / "logs"
 
-REQUIRED_DIR = [MODEL_DIR, LOG_DIR]
+REQUIRED_DIR = [MODELS_DIR, LOG_DIR]
 for directory in REQUIRED_DIR:
     directory.mkdir(parents=True, exist_ok=True)
 
