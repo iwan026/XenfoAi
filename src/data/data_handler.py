@@ -4,7 +4,7 @@ import MetaTrader5 as mt5
 import pandas_ta as ta
 from pathlib import Path
 from config import (
-    DATASET_DIR,
+    DATASETS_DIR,
     TIMEFRAMES,
     FEATURE_COLUMNS,
     MT5_LOGIN,
@@ -103,7 +103,7 @@ class DataHandler:
     ) -> pd.DataFrame:
         """Simpan dataframe ke csv"""
         try:
-            symbol_dir = DATASET_DIR / symbol.upper()
+            symbol_dir = DATASETS_DIR / symbol.upper()
             symbol_dir.mkdir(exist_ok=True)
 
             file_path = symbol_dir / f"{symbol.upper()}_{timeframe.upper()}.csv"
@@ -119,7 +119,7 @@ class DataHandler:
         """Muat data dari file Csv"""
         try:
             file_path = (
-                DATASET_DIR
+                DATASETS_DIR
                 / symbol.upper()
                 / f"{symbol.upper()}_{timeframe.upper()}.csv"
             )
