@@ -4,7 +4,7 @@ from typing import Dict, List
 from config import LOGS_DIR
 
 
-def setup_logging(name: str) -> logging.logger:
+def setup_logging(name: str) -> logging.Logger:
     """Setup konfigurasi logging"""
     log_file = LOGS_DIR / f"{name}.log"
 
