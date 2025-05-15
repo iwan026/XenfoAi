@@ -56,7 +56,7 @@ class ForexModel:
 
             self.model.compile(
                 optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-                loss="crossentrophy",
+                loss="binary_crossentrophy",
                 metrics=["accuracy"],
             )
 
@@ -205,7 +205,7 @@ class ForexModel:
                 ma_signal,
             ]
 
-            buy_count = signals.count("Buyy")
+            buy_count = signals.count("Buy")
             sell_count = signals.count("Sell")
 
             final_signal = "Buy" if buy_count > sell_count else "Sell"

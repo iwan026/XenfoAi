@@ -29,14 +29,14 @@ class DataHandler:
                 return False
 
             if not mt5.login(
-                login=config.MT5_LOGIN,
-                password=config.MT5_PASSWORD,
-                server=config.MT5_SERVER,
+                login=MT5_LOGIN,
+                password=MT5_PASSWORD,
+                server=MT5_SERVER,
             ):
                 logger.error(f"Login ke MetaTrader5 gagal: {mt5.last_error()}")
                 return False
 
-            logger.info(f"Koneksi ke MetaTrader5 berhasil")
+            logger.info("Koneksi ke MetaTrader5 berhasil")
             return True
 
         except Exception as e:
@@ -127,7 +127,7 @@ class DataHandler:
                 logger.error(f"File tidak ada: {file_path}")
                 return None
 
-            df = pd.read_csv(file_path)
+            df = pd.read_csv(file_path, parse_dates=["datetime"], dayfirst=True)
             df["datetime"] = pd.to_datetime(df["datetime"])
             return df
 
