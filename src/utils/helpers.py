@@ -8,7 +8,7 @@ def setup_logging(name: str) -> logging.Logger:
     """Setup konfigurasi logging"""
     log_file = LOGS_DIR / f"{name}.log"
 
-    formatter = logging.formatter(
+    formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
 
