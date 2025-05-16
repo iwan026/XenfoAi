@@ -41,24 +41,24 @@ class ModelConfig:
     # Training
     SEQUENCE_LENGTH = 60
     BATCH_SIZE = 32
-    EPOCHS = 50
+    EPOCHS = 100
     VALIDATION_SPLIT = 0.2
     LEARNING_RATE = 0.001
-    PATIENCE = 5
+    PATIENCE = 10
 
     # Model Architecture
     CNN_FILTERS = [32, 64, 128]
-    CNN_KERNEL_SIZES = [3, 3, 3]
-    CNN_POOL_SIZES = [2, 2, 2]
+    CNN_KERNEL_SIZES = [(3, 1), (3, 1), (3, 1)]
+    CNN_POOL_SIZES = [(2, 1), (2, 1), (2, 1)]
     CNN_DROPOUT = 0.2
 
-    LSTM_UNITS = [100, 50]
+    LSTM_UNITS = [64, 32]
     LSTM_DROPOUT = 0.2
 
     TRANSFORMER_HEAD_SIZE = 256
     TRANSFORMER_NUM_HEADS = 4
     TRANSFORMER_FF_DIM = 4
-    TRANSFORMER_DROPOUT = 0.2
+    TRANSFORMER_DROPOUT = 0.1
 
     # Feature Engineering
     TECHNICAL_FEATURES = [
