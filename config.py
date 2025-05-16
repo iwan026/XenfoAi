@@ -11,7 +11,8 @@ DATASETS_DIR = BASE_DIR / "datasets"
 MODELS_DIR = BASE_DIR / "models"
 LOGS_DIR = BASE_DIR / "logs"
 
-REQUIRED_DIR = [MODELS_DIR, LOGS_DIR]
+# Buat direktori yang diperlukan
+REQUIRED_DIR = [MODELS_DIR, LOGS_DIR, DATASETS_DIR]
 for directory in REQUIRED_DIR:
     directory.mkdir(parents=True, exist_ok=True)
 
@@ -26,35 +27,20 @@ TIMEFRAMES = {
     "W1": mt5.TIMEFRAME_W1,
 }
 
-# Konfigurasi Model
-SEQUENCE_LENGTH = 60
-BATCH_SIZE = 32
-EPOCHS = 50
-TRAIN_TEST_SPLIT = 0.2
-
 # Konfigurasi Telegram
 BOT_TOKEN = "7667262262:AAFYkfcdd8OZQskNYQPJ9KbVO8rGE3rvouI"
 ADMIN_ID = [1198920849]
-
-FEATURE_COLUMNS = [
-    "open",
-    "high",
-    "low",
-    "close",
-    "volume",
-    "rsi",
-    "MACD_12_26_9",
-    "MACDs_12_26_9",
-    "BBL_5_2.0",
-    "BBM_5_2.0",
-    "BBU_5_2.0",
-    "sma_20",
-    "sma_50",
-    "ema_9",
-    "ema_21",
-]
 
 # Konfigurasi MT5
 MT5_LOGIN = 5035979858
 MT5_PASSWORD = "N@Al6mVk"
 MT5_SERVER = "MetaQuotes-Demo"
+
+# Resource Management
+MAX_MEMORY_USAGE = 6.0  # GB
+MAX_CPU_USAGE = 75  # Percent
+ENABLE_GPU = False  # Set True jika GPU tersedia
+
+# Cache Management
+CACHE_EXPIRY = 3600  # Detik
+MAX_CACHE_SIZE = 1.0  # GB

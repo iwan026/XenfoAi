@@ -1,27 +1,31 @@
 import logging
 import pandas as pd
+import numpy as np
 import MetaTrader5 as mt5
-import pandas_ta as ta
 from pathlib import Path
+from typing import Optional, Dict, Tuple
+from sklearn.model_selection import train_test_split
+
 from config import (
     DATASETS_DIR,
     TIMEFRAMES,
-    FEATURE_COLUMNS,
     MT5_LOGIN,
     MT5_PASSWORD,
     MT5_SERVER,
 )
-from sklearn.preprocessing import MinMaxScaler
+from src.models.model_config import ModelConfig
+from src.data.feature_engineering import FeatureEngineer
 
 logger = logging.getLogger(__name__)
 
 
 class DataHandler:
-    def __init__(self):
-        self.scaler = MinMaxScaler(feature_range=(0, 1))
+    def __init__(self, config: ModelConfig):
+        self.config = config
+        self.feature_engineer = FeatureEngineer(config)
         self.initialize_mt5()
 
-    def initialize_mt5(self):
+    def initialize_mt5(self) -> bool:
         """Inisiasi Koneksi MetaTrader5"""
         try:
             if not mt5.initialize():
@@ -45,8 +49,8 @@ class DataHandler:
 
     def get_symbol_data(
         self, symbol: str, timeframe: str, num_candles: int = 5000
-    ) -> pd.DataFrame:
-        """Ambil data OHLC dari MetaTrader5"""
+    ) -> Optional[pd.DataFrame]:
+        """Ambil data OHLCV dari MetaTrader5"""
         try:
             mt5_timeframe = TIMEFRAMES.get(timeframe)
             if mt5_timeframe is None:
@@ -65,42 +69,68 @@ class DataHandler:
                 },
                 inplace=True,
             )
+
+            # Tambahkan fitur teknikal
+            df = self.feature_engineer.add_technical_indicators(df)
+
             return df
 
         except Exception as e:
             logger.error(f"Gagal mengambil data symbol: {e}")
             return None
 
-    def add_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Tambahkan indikator teknikal"""
+    def prepare_training_data(
+        self, df: pd.DataFrame, validation_split: float = 0.2
+    ) -> Tuple[Dict, Dict]:
+        """Mempersiapkan data untuk training"""
         try:
-            df["rsi"] = ta.rsi(df["close"], length=14)
-            macd = ta.macd(df["close"])
-            df = pd.concat([df, macd], axis=1)
+            # Persiapkan data menggunakan feature engineer
+            prepared_data = self.feature_engineer.prepare_data(df)
 
-            bbands = ta.bbands(df["close"])
-            df = pd.concat([df, bbands], axis=1)
+            # Split data
+            data_length = len(prepared_data["target"])
+            split_idx = int(data_length * (1 - validation_split))
 
-            df["sma_20"] = ta.sma(df["close"], length=20)
-            df["sma_50"] = ta.sma(df["close"], length=50)
-            df["ema_9"] = ta.ema(df["close"], length=9)
-            df["ema_21"] = ta.ema(df["close"], length=21)
+            train_data = {
+                "technical_features": prepared_data["technical_features"][:split_idx],
+                "price_features": prepared_data["price_features"][:split_idx],
+                "price_features_cnn": prepared_data["price_features_cnn"][:split_idx],
+                "target": prepared_data["target"][:split_idx],
+            }
 
-            stoch = ta.stoch(df["high"], df["low"], df["close"])
-            df = pd.concat([df, stoch], axis=1)
+            val_data = {
+                "technical_features": prepared_data["technical_features"][split_idx:],
+                "price_features": prepared_data["price_features"][split_idx:],
+                "price_features_cnn": prepared_data["price_features_cnn"][split_idx:],
+                "target": prepared_data["target"][split_idx:],
+            }
 
-            df.fillna(method="ffill", inplace=True)
-            df.fillna(method="bfill", inplace=True)
-
-            return df
+            return train_data, val_data
 
         except Exception as e:
-            logger.error(f"Terjadi error ketika menambahkan indikator teknikal: {e}")
-            return df
+            logger.error(f"Error dalam persiapan data training: {e}")
+            raise
 
-    def save_to_csv(
-        self, df: pd.DataFrame, symbol: str, timeframe: str
-    ) -> pd.DataFrame:
+    def prepare_prediction_data(self, df: pd.DataFrame) -> Dict:
+        """Mempersiapkan data untuk prediksi"""
+        try:
+            # Ambil data terakhir sesuai sequence length
+            last_sequence = df.tail(self.config.SEQUENCE_LENGTH)
+
+            # Persiapkan data menggunakan feature engineer
+            prepared_data = self.feature_engineer.prepare_data(last_sequence)
+
+            return {
+                "technical_features": prepared_data["technical_features"][-1:],
+                "price_features": prepared_data["price_features"][-1:],
+                "price_features_cnn": prepared_data["price_features_cnn"][-1:],
+            }
+
+        except Exception as e:
+            logger.error(f"Error dalam persiapan data prediksi: {e}")
+            raise
+
+    def save_to_csv(self, df: pd.DataFrame, symbol: str, timeframe: str) -> bool:
         """Simpan dataframe ke csv"""
         try:
             symbol_dir = DATASETS_DIR / symbol.upper()
@@ -115,8 +145,8 @@ class DataHandler:
             logger.error(f"Gagal menyimpan data ke csv: {e}")
             return False
 
-    def load_from_csv(self, symbol: str, timeframe: str) -> pd.DataFrame:
-        """Muat data dari file Csv"""
+    def load_from_csv(self, symbol: str, timeframe: str) -> Optional[pd.DataFrame]:
+        """Muat data dari file CSV"""
         try:
             file_path = (
                 DATASETS_DIR
@@ -127,32 +157,23 @@ class DataHandler:
                 logger.error(f"File tidak ada: {file_path}")
                 return None
 
-            # Baca file dalam chunks
-            chunk_size = 5000  # Ukuran chunk bisa disesuaikan
+            # Baca file dalam chunks untuk menghemat memori
             chunks = []
+            chunk_size = self.config.BATCH_SIZE * 100  # Sesuaikan dengan kebutuhan
 
-            # Gunakan iterator untuk membaca file secara bertahap
             for chunk in pd.read_csv(
-                file_path, parse_dates=["datetime"], dayfirst=True, chunksize=chunk_size
+                file_path, parse_dates=["datetime"], chunksize=chunk_size
             ):
                 # Konversi tipe data untuk menghemat memori
                 for col in chunk.select_dtypes(include=["float64"]).columns:
                     chunk[col] = chunk[col].astype("float32")
-
                 chunks.append(chunk)
 
-                # Log progress
-                logger.info(f"Membaca {len(chunks) * chunk_size} baris...")
-
-            # Gabungkan semua chunks
             df = pd.concat(chunks, ignore_index=True)
-            df["datetime"] = pd.to_datetime(df["datetime"])
-
-            logger.info(f"Total baris yang dibaca: {len(df)}")
             return df
 
         except Exception as e:
-            logger.error(f"Gagal memuat data dari file Csv: {e}")
+            logger.error(f"Gagal memuat data dari CSV: {e}")
             return None
 
     def update_dataset(self, symbol: str, timeframe: str) -> bool:
@@ -160,19 +181,14 @@ class DataHandler:
         try:
             new_data = self.get_symbol_data(symbol, timeframe)
             if new_data is None:
-                return None
+                return False
 
-            new_data = self.add_technical_indicators(new_data)
             return self.save_to_csv(new_data, symbol, timeframe)
 
         except Exception as e:
-            logger.error(f"Terjadi error saat update dataset: {e}")
+            logger.error(f"Error saat update dataset: {e}")
             return False
 
     def __del__(self):
         """Bersihkan koneksi MetaTrader5"""
-        try:
-            mt5.shutdown()
-            logger.info("Koneksi MetaTrader5 berhasil di tutup")
-        except:
-            pass
+        mt5.shutdown()
