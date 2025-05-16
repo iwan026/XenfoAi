@@ -12,7 +12,7 @@ REQUIRED_DIRS = [DATASETS_DIR, MODELS_DIR]
 for directory in REQUIRED_DIRS:
     directory.mkdir(parents=True, exist_ok=True)
 
-# MT5 Configuration
+# MT5 Timeframe Configuration
 TIMEFRAMES = {
     "M1": "TIMEFRAME_M1",
     "M5": "TIMEFRAME_M5",
@@ -24,16 +24,16 @@ TIMEFRAMES = {
 }
 
 # Trading Configuration
-SYMBOLS = ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD"]  # Tambahkan simbol yang diperlukan
+SYMBOLS = ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD"]
 
-# MetaTrader5 Credentials
-MT5_LOGIN = "5035979858"
-MT5_PASSWORD = "N@Al6mVk"
-MT5_SERVER = "MetaQuotes-Demo"
+# MetaTrader5 Configuration
+MT5_LOGIN = os.getenv("MT5_LOGIN", "5035979858")
+MT5_PASSWORD = os.getenv("MT5_PASSWORD", "N@Al6mVk")
+MT5_SERVER = os.getenv("MT5_SERVER", "MetaQuotes-Demo")
 
 # Telegram Configuration
-BOT_TOKEN = "7667262262:AAFYkfcdd8OZQskNYQPJ9KbVO8rGE3rvouI"
-ADMIN_IDS = [1198920849]  # List admin user IDs
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7667262262:AAFYkfcdd8OZQskNYQPJ9KbVO8rGE3rvouI")
+ADMIN_IDS = [int(id) for id in os.getenv("ADMIN_IDS", "1198920849").split(",")]
 
 
 # Model Configuration
@@ -83,14 +83,7 @@ class ModelConfig:
     PRICE_FEATURES = ["open", "high", "low", "close", "volume"]
 
 
-# Logging Configuration
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler(BASE_DIR / "app.log")],
-)
-
 # Resource Management
-MAX_MEMORY_GB = 6.0  # Maximum memory usage in GB
-MAX_CPU_PERCENT = 75  # Maximum CPU usage in percent
-CACHE_EXPIRY = 3600  # Cache expiry in seconds
+MAX_MEMORY_GB = 6.0
+MAX_CPU_PERCENT = 75
+CACHE_EXPIRY = 3600
