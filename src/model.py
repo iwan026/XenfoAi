@@ -281,71 +281,67 @@ class ForexModel:
             logger.info("Calculating technical indicators...")
             df = df.copy()
 
-            # RSI
+            # === RSI ===
             delta = df["close"].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / loss
+            gain = np.where(delta > 0, delta, 0)
+            loss = np.where(delta < 0, -delta, 0)
+            avg_gain = pd.Series(gain).rolling(window=14).mean()
+            avg_loss = pd.Series(loss).rolling(window=14).mean()
+            rs = avg_gain / avg_loss
             df["rsi_14"] = 100 - (100 / (1 + rs))
 
-            # MACD
+            # === MACD ===
             exp1 = df["close"].ewm(span=12, adjust=False).mean()
             exp2 = df["close"].ewm(span=26, adjust=False).mean()
             df["macd"] = exp1 - exp2
             df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
             df["macd_hist"] = df["macd"] - df["macd_signal"]
 
-            # Bollinger Bands
+            # === Bollinger Bands ===
             df["bb_middle"] = df["close"].rolling(window=20).mean()
             std = df["close"].rolling(window=20).std()
-            df["bb_upper"] = df["bb_middle"] + (std * 2)
-            df["bb_lower"] = df["bb_middle"] - (std * 2)
+            df["bb_upper"] = df["bb_middle"] + 2 * std
+            df["bb_lower"] = df["bb_middle"] - 2 * std
 
-            # Moving Averages
+            # === Moving Averages ===
             df["sma_20"] = df["close"].rolling(window=20).mean()
             df["sma_50"] = df["close"].rolling(window=50).mean()
             df["ema_9"] = df["close"].ewm(span=9, adjust=False).mean()
             df["ema_21"] = df["close"].ewm(span=21, adjust=False).mean()
 
-            # ATR
+            # === ATR ===
             high_low = df["high"] - df["low"]
-            high_close = abs(df["high"] - df["close"].shift())
-            low_close = abs(df["low"] - df["close"].shift())
-            ranges = pd.concat([high_low, high_close, low_close], axis=1)
-            true_range = ranges.max(axis=1)
-            df["atr_14"] = true_range.rolling(window=14).mean()
+            high_close = np.abs(df["high"] - df["close"].shift())
+            low_close = np.abs(df["low"] - df["close"].shift())
+            tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+            df["atr_14"] = tr.rolling(window=14).mean()
 
-            # ADX
+            # === ADX ===
             plus_dm = df["high"].diff()
             minus_dm = df["low"].diff()
             plus_dm[plus_dm < 0] = 0
             minus_dm[minus_dm > 0] = 0
-            tr = true_range
-            plus_di = 100 * (
-                plus_dm.rolling(window=14).mean() / tr.rolling(window=14).mean()
-            )
-            minus_di = 100 * (
-                minus_dm.rolling(window=14).mean() / tr.rolling(window=14).mean()
-            )
+            atr = df["atr_14"]
+            plus_di = 100 * (plus_dm.rolling(window=14).mean() / atr)
+            minus_di = 100 * (abs(minus_dm.rolling(window=14).mean()) / atr)
             dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
             df["adx_14"] = dx.rolling(window=14).mean()
 
-            # CCI
+            # === CCI ===
             typical_price = (df["high"] + df["low"] + df["close"]) / 3
-            mean_dev = typical_price.rolling(window=20).apply(
-                lambda x: pd.Series(x).mad()
+            ma_typical = typical_price.rolling(window=20).mean()
+            mad_typical = typical_price.rolling(window=20).apply(
+                lambda x: np.mean(np.abs(x - np.mean(x))), raw=True
             )
-            df["cci_20"] = (typical_price - typical_price.rolling(window=20).mean()) / (
-                0.015 * mean_dev
-            )
+            df["cci_20"] = (typical_price - ma_typical) / (0.015 * mad_typical)
 
-            # Stochastic
+            # === Stochastic ===
             low_min = df["low"].rolling(window=14).min()
             high_max = df["high"].rolling(window=14).max()
             df["stoch_k"] = 100 * (df["close"] - low_min) / (high_max - low_min)
             df["stoch_d"] = df["stoch_k"].rolling(window=3).mean()
 
-            # Handle missing/infinite values
+            # === Clean up NaN/Inf ===
             df = df.replace([np.inf, -np.inf], np.nan)
             df = df.fillna(method="ffill").fillna(method="bfill")
 
