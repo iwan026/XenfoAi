@@ -22,42 +22,60 @@ logger = logging.getLogger(__name__)
 
 
 class TransformerBlock(tf.keras.layers.Layer):
-    """Transformer block for sequence processing"""
+    """Transformer block untuk sequence processing"""
 
-    def __init__(self, key_dim: int, num_heads: int, ff_dim: int, rate: float = 0.1):
+    def __init__(self, embed_dim: int, num_heads: int, ff_dim: int, rate: float = 0.1):
         super(TransformerBlock, self).__init__()
-        self.key_dim = key_dim
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.ff_dim = ff_dim
+        self.rate = rate
+
+        # Multi-head attention dengan dimensi yang konsisten
         self.att = tf.keras.layers.MultiHeadAttention(
-            num_heads=num_heads, key_dim=key_dim
+            num_heads=num_heads,
+            key_dim=embed_dim // num_heads,  # Pastikan key_dim sesuai dengan num_heads
+            value_dim=embed_dim // num_heads,  # Tambahkan value_dim yang sesuai
         )
+
+        # Feed forward network dengan dimensi yang konsisten
         self.ffn = tf.keras.Sequential(
             [
                 tf.keras.layers.Dense(ff_dim, activation="relu"),
-                tf.keras.layers.Dense(key_dim),
+                tf.keras.layers.Dense(
+                    embed_dim
+                ),  # Output dim harus sama dengan input (embed_dim)
             ]
         )
+
+        # Layer normalization dan dropout
         self.layernorm1 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
         self.layernorm2 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
         self.dropout1 = tf.keras.layers.Dropout(rate)
         self.dropout2 = tf.keras.layers.Dropout(rate)
 
     def call(self, inputs, training=False):
-        attn_output = self.att(inputs, inputs)
+        # Multi-head attention dengan shape yang konsisten
+        attn_output = self.att(inputs, inputs, inputs)
         attn_output = self.dropout1(attn_output, training=training)
         out1 = self.layernorm1(inputs + attn_output)
 
+        # Feed forward network dengan shape yang konsisten
         ffn_output = self.ffn(out1)
         ffn_output = self.dropout2(ffn_output, training=training)
         return self.layernorm2(out1 + ffn_output)
 
+    def compute_output_shape(self, input_shape):
+        return input_shape
+
     def get_config(self):
-        config = super().get_config()
+        config = super(TransformerBlock, self).get_config()
         config.update(
             {
-                "key_dim": self.key_dim,
-                "num_heads": self.att.num_heads,
-                "ff_dim": self.ffn.layers[0].units,
-                "rate": self.dropout1.rate,
+                "embed_dim": self.embed_dim,
+                "num_heads": self.num_heads,
+                "ff_dim": self.ff_dim,
+                "rate": self.rate,
             }
         )
         return config
@@ -122,7 +140,7 @@ class ForexModel:
             raise
 
     def _build_models(self):
-        """Build model architectures"""
+        """Build arsitektur model"""
         try:
             # XGBoost model
             self.xgb_model = xgb.XGBClassifier(
@@ -141,10 +159,16 @@ class ForexModel:
             num_technical_features = len(self.config.TECHNICAL_FEATURES)
             num_price_features = len(self.config.PRICE_FEATURES)
 
+            # Define embedding dimension yang konsisten
+            embed_dim = 64  # Ubah ke 64 untuk dimensi yang lebih besar
+
             # Input layers
             technical_input = tf.keras.layers.Input(
                 shape=(self.config.SEQUENCE_LENGTH, num_technical_features)
             )
+
+            # Add embedding layer untuk technical features
+            technical_embedding = tf.keras.layers.Dense(embed_dim)(technical_input)
 
             price_input = tf.keras.layers.Input(
                 shape=(self.config.SEQUENCE_LENGTH, num_price_features, 1)
@@ -164,11 +188,11 @@ class ForexModel:
                 cnn = tf.keras.layers.BatchNormalization()(cnn)
 
             cnn = tf.keras.layers.Flatten()(cnn)
-            cnn = tf.keras.layers.Dense(64, activation="relu")(cnn)
+            cnn = tf.keras.layers.Dense(embed_dim, activation="relu")(cnn)
             cnn = tf.keras.layers.Dropout(self.config.CNN_DROPOUT)(cnn)
 
             # LSTM branch
-            lstm = technical_input
+            lstm = technical_embedding  # Gunakan technical_embedding
             for i, units in enumerate(self.config.LSTM_UNITS):
                 return_sequences = i < len(self.config.LSTM_UNITS) - 1
                 lstm = tf.keras.layers.LSTM(
@@ -179,18 +203,18 @@ class ForexModel:
 
             # Transformer branch
             transformer_block = TransformerBlock(
-                key_dim=self.config.TRANSFORMER_HEAD_SIZE,
-                num_heads=self.config.TRANSFORMER_NUM_HEADS,
-                ff_dim=self.config.TRANSFORMER_FF_DIM,
+                embed_dim=embed_dim,  # Gunakan embed_dim yang sama
+                num_heads=4,
+                ff_dim=embed_dim * 4,  # FF dim biasanya 4x embed_dim
                 rate=self.config.TRANSFORMER_DROPOUT,
             )
 
-            transformer = transformer_block(technical_input)
+            transformer = transformer_block(technical_embedding)
             transformer = tf.keras.layers.GlobalAveragePooling1D()(transformer)
 
-            # Combine all branches
+            # Combine all branches dengan dimensi yang konsisten
             combined = tf.keras.layers.concatenate([cnn, lstm, transformer])
-            combined = tf.keras.layers.Dense(32, activation="relu")(combined)
+            combined = tf.keras.layers.Dense(embed_dim, activation="relu")(combined)
             combined = tf.keras.layers.Dropout(0.2)(combined)
             output = tf.keras.layers.Dense(1, activation="sigmoid")(combined)
 
