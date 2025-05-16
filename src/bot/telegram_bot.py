@@ -219,15 +219,6 @@ class TelegramBot:
                 )
                 return
 
-            # Cek resource
-            resources = self.resource_monitor.check_resources()
-            if not resources["memory_ok"] or not resources["cpu_ok"]:
-                await update.message.reply_text(
-                    "⚠️ Sistem terlalu sibuk untuk melakukan training.\n"
-                    "Mohon coba lagi nanti."
-                )
-                return
-
             process_message = await update.message.reply_text(
                 f"⏳ Melatih model untuk {symbol} pada timeframe {timeframe}...\n"
                 "Ini akan memakan waktu beberapa menit."
@@ -238,14 +229,13 @@ class TelegramBot:
             success = await asyncio.get_event_loop().run_in_executor(None, model.train)
 
             if success:
-                # Bersihkan cache untuk pair ini
-                self.cache_manager.clear()
                 await process_message.edit_text(
-                    "✅ Model berhasil dilatih dan disimpan."
+                    f"✅ Model untuk {symbol} {timeframe} berhasil dilatih dan disimpan."
                 )
             else:
                 await process_message.edit_text(
-                    "❌ Gagal melatih model. Periksa log untuk informasi lebih lanjut."
+                    f"❌ Gagal melatih model untuk {symbol} {timeframe}. "
+                    "Periksa log untuk informasi lebih lanjut."
                 )
 
         except Exception as e:

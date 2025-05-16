@@ -7,6 +7,7 @@ from typing import Dict, Optional
 from src.models.model_config import ModelConfig
 from src.models.hybrid_model import HybridForexModel
 from src.data.data_handler import DataHandler
+from src.utils.performance_monitor import PerformanceMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ class ForexModel:
         self.config = ModelConfig()
         self.data_handler = DataHandler(self.config)
         self.model = HybridForexModel(self.config)
+        self.performance_monitor = PerformanceMonitor(self.symbol, self.timeframe)
         self.model_dir = self.get_model_dir()
         self.load_or_create_model()
 
@@ -51,13 +53,17 @@ class ForexModel:
     def train(self) -> bool:
         """Training model"""
         try:
+            logger.info(f"Memulai training untuk {self.symbol} {self.timeframe}")
+
             # Update dataset
             if not self.data_handler.update_dataset(self.symbol, self.timeframe):
+                logger.error("Gagal mengupdate dataset")
                 return False
 
             # Load data
             df = self.data_handler.load_from_csv(self.symbol, self.timeframe)
             if df is None:
+                logger.error("Gagal memuat data dari CSV")
                 return False
 
             # Prepare data
@@ -66,11 +72,15 @@ class ForexModel:
             )
 
             # Train model
+            logger.info("Memulai proses training model...")
             history = self.model.train(train_data, val_data)
 
             # Save model
             xgb_path, deep_path = self.get_model_paths()
             self.model.save_models(str(xgb_path), str(deep_path))
+
+            # Record training metrics
+            self.performance_monitor.add_training_metrics(history)
 
             logger.info(f"Model berhasil di-training dan disimpan")
             return True
@@ -118,19 +128,32 @@ class ForexModel:
 
             final_signal = "Buy" if prediction > 0.5 else "Sell"
 
-            return {
+            result = {
                 "symbol": self.symbol,
                 "timeframe": self.timeframe,
-                "prediction": prediction,
-                "confidence": confidence,
+                "prediction": float(prediction),
+                "confidence": float(confidence),
                 "rsi_signal": signals["rsi_signal"],
                 "macd_signal": signals["macd_signal"],
                 "ma_signal": signals["ma_signal"],
                 "final_signal": final_signal,
-                "final_confidence": confidence,
+                "final_confidence": float(confidence),
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
+
+            # Record prediction
+            self.performance_monitor.add_prediction(result)
+
+            return result
 
         except Exception as e:
             logger.error(f"Error saat membuat prediksi: {e}")
             return None
+
+    def save_models(self, xgb_path: str, deep_path: str):
+        """Menyimpan model"""
+        try:
+            self.model.save_models(xgb_path, deep_path)
+        except Exception as e:
+            logger.error(f"Error saat menyimpan model: {e}")
+            raise
