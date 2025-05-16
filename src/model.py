@@ -467,7 +467,9 @@ class ForexModel:
 
             # Ensure we have 'time' column and convert to datetime
             if "time" in df.columns:
-                df["time"] = pd.to_datetime(df["time"])
+                df["time"] = pd.to_datetime(
+                    df["time"], format="%d.%m.%Y %H:%M:%S.%f"
+                )  # Tambahkan format yang benar
                 df.set_index("time", inplace=True)
             else:
                 # If there's no time column, check if there's a datetime column
