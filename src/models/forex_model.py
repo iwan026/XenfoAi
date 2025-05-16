@@ -162,10 +162,6 @@ class ForexModel:
                 verbose=1,
             )
 
-            # Evaluasi model
-            loss, accuracy = self.model_evaluate(X_test, y_test)
-            logger.info(f"Evaluasi model - Loss: {loss}, Accuracy: {accuracy}")
-
             # Simpan model
             self.model_save(str(self.model_path))
             logger.info(f"Model disimpan ke: {self.model_path}")
