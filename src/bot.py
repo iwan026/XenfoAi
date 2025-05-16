@@ -157,58 +157,48 @@ class TelegramBot:
             )
 
             try:
-                # Get data with indicators already calculated
-                df_with_indicators = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    self.active_models[model_key]._get_realtime_data,
-                    60,  # Get enough candles for calculation
-                )
-
-                # Make prediction
-                prediction = await asyncio.get_event_loop().run_in_executor(
+                # Get prediction with chart
+                result = await asyncio.get_event_loop().run_in_executor(
                     None,
                     self.active_models[model_key].predict,
                     True,  # use_realtime=True
                 )
 
-                if prediction is not None:
-                    signal = "🟢 BUY" if prediction > 0.5 else "🔴 SELL"
-                    confidence = abs(prediction - 0.5) * 2
-
-                    # Get latest candle with indicators
-                    latest = df_with_indicators.iloc[-1]
+                if result is not None:
+                    signal = "🟢 BUY" if result["prediction"] > 0.5 else "🔴 SELL"
 
                     # Prepare indicators message
+                    indicators = result["indicators"]
                     indicators_msg = (
-                        "*Indicators:*\n"
-                        f"RSI: {latest.get('rsi_14', 'N/A'):.2f}\n"
-                        f"MACD: {latest.get('macd', 'N/A'):.4f}\n"
-                        f"SMA20: {latest.get('sma_20', 'N/A'):.4f}\n"
-                        f"SMA50: {latest.get('sma_50', 'N/A'):.4f}\n"
-                        f"EMA9: {latest.get('ema_9', 'N/A'):.4f}\n"
-                        f"EMA21: {latest.get('ema_21', 'N/A'):.4f}\n"
+                        "*Technical Indicators:*\n"
+                        f"• EMA 9: {indicators['ema_9']:.4f}\n"
+                        f"• EMA 21: {indicators['ema_21']:.4f}\n"
+                        f"• SMA 50: {indicators['sma_50']:.4f}\n"
+                        f"• RSI: {indicators['rsi']:.2f}\n"
+                        f"• MACD: {indicators['macd']:.4f}\n"
                     )
 
-                    await processing_msg.edit_text(
-                        f"📊 *Realtime Prediction for {symbol} {timeframe}*\n\n"
-                        f"Signal: {signal}\n"
-                        f"Confidence: {confidence:.2%}\n\n"
-                        f"{indicators_msg}\n"
-                        f"🕒 {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC",
-                        parse_mode="Markdown",
-                    )
+                    # Send chart image
+                    with open(result["chart_path"], "rb") as chart_file:
+                        await update.message.reply_photo(
+                            photo=chart_file,
+                            caption=(
+                                f"📊 *{symbol} {timeframe}*\n\n"
+                                f"Signal: {signal}\n"
+                                f"Confidence: {result['confidence']:.2%}\n\n"
+                                f"{indicators_msg}\n"
+                                f"🕒 {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
+                            ),
+                            parse_mode="Markdown",
+                        )
+
+                    # Delete processing message
+                    await processing_msg.delete()
                 else:
                     await processing_msg.edit_text(
                         "❌ Prediction failed - not enough data or model error"
                     )
 
-            except ConnectionError as e:
-                await processing_msg.edit_text(
-                    "❌ Failed to connect to MT5. Please:\n"
-                    "1. Ensure MT5 terminal is running\n"
-                    "2. Check your internet connection\n"
-                    f"Error details: {str(e)}"
-                )
             except Exception as e:
                 await processing_msg.edit_text(f"❌ Error during prediction: {str(e)}")
                 logger.error(f"Prediction error: {e}", exc_info=True)

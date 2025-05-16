@@ -2,9 +2,14 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 import MetaTrader5 as mt5
+import matplotlib.dates as mdates
 from tensorflow.keras import layers, models, optimizers, callbacks
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
+from mplfinance.original_flavor import candlestick_ohlc
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import logging
 from pathlib import Path
@@ -270,6 +275,173 @@ class ForexModel:
 
         logger.info(f"Saved training plot to {plot_path}")
 
+    def _plot_chart(self, df: pd.DataFrame, prediction: float) -> Path:
+        """Generate trading chart with proper TradingView-like candlesticks"""
+        try:
+            # Prepare figure with TradingView-like style
+            plt.style.use("dark_background")
+            fig, (ax1, ax2) = plt.subplots(
+                2,
+                1,
+                figsize=(12, 8),
+                gridspec_kw={"height_ratios": [3, 1]},
+                facecolor="#131722",
+            )
+            fig.suptitle(
+                f"{self.symbol} {self.timeframe} - Prediction: {'BUY' if prediction > 0.5 else 'SELL'} ({prediction:.2%})",
+                color="white",
+                fontsize=14,
+            )
+
+            # Convert datetime to mdates
+            df = df.copy()
+            df["date_num"] = mdates.date2num(df.index.to_pydatetime())
+
+            # Get last 50 candles for display
+            display_df = df.tail(50).copy()
+
+            # Create proper OHLC data for candlestick
+            ohlc = display_df[["date_num", "open", "high", "low", "close"]].values
+
+            # TradingView colors
+            up_color = "#26a69a"  # Green for bullish candles
+            down_color = "#ef5350"  # Red for bearish candles
+
+            # Use the proper mplfinance candlestick function
+            # Make sure wick and body are properly displayed
+            candlestick_ohlc(
+                ax1,
+                ohlc,
+                width=0.6 / 24,  # Adjusted for proper width - depends on timeframe
+                colorup=up_color,
+                colordown=down_color,
+                alpha=1.0,
+            )
+
+            # Add Trading View-like grid
+            ax1.grid(color="#2a2e39", linestyle="-", linewidth=0.5, alpha=0.5)
+            ax1.set_facecolor("#131722")  # TradingView background color
+
+            # Set y-axis to appropriate price range with some padding
+            price_min = display_df["low"].min()
+            price_max = display_df["high"].max()
+            price_range = price_max - price_min
+            ax1.set_ylim(price_min - 0.1 * price_range, price_max + 0.1 * price_range)
+
+            # Set axis colors
+            ax1.tick_params(axis="both", colors="#787b86", which="both")
+            for spine in ax1.spines.values():
+                spine.set_color("#2a2e39")
+
+            # Plot EMAs with TradingView-like colors
+            ax1.plot(
+                display_df.index,
+                display_df["ema_9"],
+                color="#e91e63",
+                label="EMA 9",
+                linewidth=1.2,
+                alpha=0.9,
+            )
+            ax1.plot(
+                display_df.index,
+                display_df["ema_21"],
+                color="#9c27b0",
+                label="EMA 21",
+                linewidth=1.2,
+                alpha=0.9,
+            )
+            ax1.plot(
+                display_df.index,
+                display_df["sma_50"],
+                color="#2196f3",
+                label="SMA 50",
+                linewidth=1.2,
+                alpha=0.9,
+            )
+
+            # Add TradingView-like legend
+            legend = ax1.legend(loc="upper left", frameon=True, fancybox=True)
+            legend.get_frame().set_facecolor("#131722")
+            legend.get_frame().set_edgecolor("#2a2e39")
+            for text in legend.get_texts():
+                text.set_color("#787b86")
+
+            # Plot RSI with TradingView style
+            ax2.plot(
+                display_df.index,
+                display_df["rsi_14"],
+                color="#2196f3",
+                label="RSI 14",
+                linewidth=1.2,
+            )
+
+            # Overbought/Oversold lines
+            ax2.axhline(70, color="#787b86", linestyle="--", linewidth=0.8, alpha=0.5)
+            ax2.axhline(30, color="#787b86", linestyle="--", linewidth=0.8, alpha=0.5)
+            ax2.axhline(50, color="#787b86", linestyle="-", linewidth=0.5, alpha=0.3)
+
+            # RSI panel styling
+            ax2.set_ylim(0, 100)
+            ax2.set_yticks([0, 30, 50, 70, 100])
+            ax2.grid(color="#2a2e39", linestyle="-", linewidth=0.5, alpha=0.5)
+            ax2.set_facecolor("#131722")
+
+            # Set axis colors for RSI panel
+            ax2.tick_params(axis="both", colors="#787b86", which="both")
+            for spine in ax2.spines.values():
+                spine.set_color("#2a2e39")
+
+            # RSI legend
+            legend2 = ax2.legend(loc="upper left", frameon=True, fancybox=True)
+            legend2.get_frame().set_facecolor("#131722")
+            legend2.get_frame().set_edgecolor("#2a2e39")
+            for text in legend2.get_texts():
+                text.set_color("#787b86")
+
+            # Format x-axis for both panels
+            for ax in [ax1, ax2]:
+                ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
+                ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+
+            plt.xticks(rotation=45)
+
+            # Add volume as histogram at the bottom of price chart
+            volume_ax = ax1.twinx()
+            volume_max = display_df["volume"].max()
+            volume_ax.set_ylim(0, volume_max * 3)
+            volume_ax.set_yticks([])  # Hide volume scale
+
+            # Calculate volume bar colors based on price change
+            colors = []
+            for i in range(len(display_df)):
+                if display_df["close"].iloc[i] >= display_df["open"].iloc[i]:
+                    colors.append(up_color)
+                else:
+                    colors.append(down_color)
+
+            # Plot volume bars with low alpha to not obscure price action
+            for i, (idx, row) in enumerate(display_df.iterrows()):
+                volume_ax.bar(
+                    idx,
+                    row["volume"],
+                    color=colors[i],
+                    alpha=0.3,
+                    width=0.6 / 24,  # Width should match candlesticks
+                )
+
+            plt.tight_layout()
+
+            # Save plot with higher resolution
+            plot_path = PLOTS_DIR / f"{self.symbol}_{self.timeframe}_chart.png"
+            plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+            plt.close()
+
+            return plot_path
+
+        except Exception as e:
+            logger.error(f"Error generating chart: {e}")
+            raise
+
     def _get_realtime_data(self, num_candles: int = 60) -> pd.DataFrame:
         """Get realtime data from MT5 and calculate indicators"""
         try:
@@ -389,8 +561,8 @@ class ForexModel:
             logger.error(f"Error during training: {e}")
             return False
 
-    def predict(self, use_realtime: bool = True) -> Optional[float]:
-        """Make prediction using either realtime or CSV data"""
+    def predict(self, use_realtime: bool = True) -> Optional[Dict]:
+        """Make prediction and return result with chart path"""
         try:
             # Get data
             if use_realtime:
@@ -414,7 +586,24 @@ class ForexModel:
             # Make prediction
             prediction = self.model.predict([tech_seq, price_seq], verbose=0)[0][0]
 
-            return float(prediction)
+            # Generate chart
+            chart_path = self._plot_chart(df, prediction)
+
+            # Get latest indicators
+            latest = df.iloc[-1]
+
+            return {
+                "prediction": float(prediction),
+                "confidence": abs(prediction - 0.5) * 2,
+                "chart_path": chart_path,
+                "indicators": {
+                    "ema_9": latest.get("ema_9", None),
+                    "ema_21": latest.get("ema_21", None),
+                    "sma_50": latest.get("sma_50", None),
+                    "rsi": latest.get("rsi_14", None),
+                    "macd": latest.get("macd", None),
+                },
+            }
 
         except Exception as e:
             logger.error(f"Error during prediction: {e}")
