@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+import MetaTrader5 as mt5
 from tensorflow.keras import layers, models, optimizers, callbacks
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
@@ -10,7 +11,17 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Tuple
 
-from config import ModelConfig, MODELS_DIR, DATASETS_DIR, LOGS_DIR, PLOTS_DIR
+from config import (
+    ModelConfig,
+    MODELS_DIR,
+    DATASETS_DIR,
+    LOGS_DIR,
+    PLOTS_DIR,
+    MT5_LOGIN,
+    MT5_PASSWORD,
+    MT5_SERVER,
+    TIMEFRAMES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -259,6 +270,55 @@ class ForexModel:
 
         logger.info(f"Saved training plot to {plot_path}")
 
+    def _get_realtime_data(self, num_candles: int = 60) -> pd.DataFrame:
+        """Get realtime data from MT5 and calculate indicators"""
+        try:
+            if not mt5.initialize(
+                login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER
+            ):
+                raise Exception(f"MT5 initialization failed: {mt5.last_error()}")
+
+            # Get current rates
+            rates = mt5.copy_rates_from_pos(
+                self.symbol, getattr(mt5, TIMEFRAMES[self.timeframe]), 0, num_candles
+            )
+
+            if rates is None:
+                raise Exception(f"Failed to get rates: {mt5.last_error()}")
+
+            # Convert to DataFrame
+            df = pd.DataFrame(rates)
+            df["time"] = pd.to_datetime(df["time"], unit="s")
+            df.set_index("time", inplace=True)
+
+            # Standardize column names
+            df = df.rename(
+                columns={
+                    "open": "open",
+                    "high": "high",
+                    "low": "low",
+                    "close": "close",
+                    "tick_volume": "volume",
+                }
+            )
+
+            # Ensure we have required OHLCV columns
+            required_cols = ["open", "high", "low", "close", "volume"]
+            for col in required_cols:
+                if col not in df.columns:
+                    raise Exception(f"Missing required price column: {col}")
+
+            # Calculate technical indicators
+            df = self._calculate_technical_indicators(df)
+
+            return df
+
+        except Exception as e:
+            logger.error(f"Error getting realtime data: {e}")
+            raise
+        finally:
+            mt5.shutdown()
+
     def train(self) -> bool:
         """Train the model"""
         try:
@@ -329,9 +389,15 @@ class ForexModel:
             logger.error(f"Error during training: {e}")
             return False
 
-    def predict(self, df: pd.DataFrame) -> Optional[float]:
-        """Make prediction on given data"""
+    def predict(self, use_realtime: bool = True) -> Optional[float]:
+        """Make prediction using either realtime or CSV data"""
         try:
+            # Get data
+            if use_realtime:
+                df = self._get_realtime_data(self.config.SEQUENCE_LENGTH + 60)
+            else:
+                df = self._load_dataset()
+
             # Prepare data
             tech_features, price_features, _ = self._prepare_data(df)
 

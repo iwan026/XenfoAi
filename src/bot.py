@@ -122,7 +122,7 @@ class TelegramBot:
             logger.error(f"Train error: {e}")
 
     async def predict_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /predict command"""
+        """Handle /predict command with realtime data"""
         try:
             args = context.args
             if len(args) != 2:
@@ -151,26 +151,71 @@ class TelegramBot:
             if model_key not in self.active_models:
                 self.active_models[model_key] = ForexModel(symbol, timeframe)
 
-            # Get latest data
-            df = self.active_models[model_key]._load_dataset()
-            prediction = self.active_models[model_key].predict(df)
+            # Start processing message
+            processing_msg = await update.message.reply_text(
+                f"⏳ Getting realtime data for {symbol} {timeframe}..."
+            )
 
-            if prediction is not None:
-                signal = "BUY" if prediction > 0.5 else "SELL"
-                confidence = abs(prediction - 0.5) * 2  # Convert to 0-1 range
-
-                await update.message.reply_text(
-                    f"📊 {symbol} {timeframe}\n"
-                    f"Signal: {signal}\n"
-                    f"Confidence: {confidence:.2%}\n"
-                    f"Model Output: {prediction:.4f}"
+            try:
+                # Get data with indicators already calculated
+                df_with_indicators = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    self.active_models[model_key]._get_realtime_data,
+                    60,  # Get enough candles for calculation
                 )
-            else:
-                await update.message.reply_text("❌ Prediction failed")
+
+                # Make prediction
+                prediction = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    self.active_models[model_key].predict,
+                    True,  # use_realtime=True
+                )
+
+                if prediction is not None:
+                    signal = "🟢 BUY" if prediction > 0.5 else "🔴 SELL"
+                    confidence = abs(prediction - 0.5) * 2
+
+                    # Get latest candle with indicators
+                    latest = df_with_indicators.iloc[-1]
+
+                    # Prepare indicators message
+                    indicators_msg = (
+                        "*Indicators:*\n"
+                        f"RSI: {latest.get('rsi_14', 'N/A'):.2f}\n"
+                        f"MACD: {latest.get('macd', 'N/A'):.4f}\n"
+                        f"SMA20: {latest.get('sma_20', 'N/A'):.4f}\n"
+                        f"SMA50: {latest.get('sma_50', 'N/A'):.4f}\n"
+                        f"EMA9: {latest.get('ema_9', 'N/A'):.4f}\n"
+                        f"EMA21: {latest.get('ema_21', 'N/A'):.4f}\n"
+                    )
+
+                    await processing_msg.edit_text(
+                        f"📊 *Realtime Prediction for {symbol} {timeframe}*\n\n"
+                        f"Signal: {signal}\n"
+                        f"Confidence: {confidence:.2%}\n\n"
+                        f"{indicators_msg}\n"
+                        f"🕒 {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC",
+                        parse_mode="Markdown",
+                    )
+                else:
+                    await processing_msg.edit_text(
+                        "❌ Prediction failed - not enough data or model error"
+                    )
+
+            except ConnectionError as e:
+                await processing_msg.edit_text(
+                    "❌ Failed to connect to MT5. Please:\n"
+                    "1. Ensure MT5 terminal is running\n"
+                    "2. Check your internet connection\n"
+                    f"Error details: {str(e)}"
+                )
+            except Exception as e:
+                await processing_msg.edit_text(f"❌ Error during prediction: {str(e)}")
+                logger.error(f"Prediction error: {e}", exc_info=True)
 
         except Exception as e:
-            await update.message.reply_text(f"❌ Error: {str(e)}")
-            logger.error(f"Predict error: {e}")
+            logger.error(f"Command error: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Command error: {str(e)}")
 
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command"""

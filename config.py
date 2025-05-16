@@ -29,13 +29,13 @@ TIMEFRAMES = {
 SYMBOLS = ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD"]
 
 # MetaTrader5 Configuration
-MT5_LOGIN = os.getenv("MT5_LOGIN", "5035979858")
-MT5_PASSWORD = os.getenv("MT5_PASSWORD", "N@Al6mVk")
-MT5_SERVER = os.getenv("MT5_SERVER", "MetaQuotes-Demo")
+MT5_LOGIN = 5035979858
+MT5_PASSWORD = "N@Al6mVk"
+MT5_SERVER = "MetaQuotes-Demo"
 
 # Telegram Configuration
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7667262262:AAFYkfcdd8OZQskNYQPJ9KbVO8rGE3rvouI")
-ADMIN_IDS = [int(id) for id in os.getenv("ADMIN_IDS", "1198920849").split(",")]
+BOT_TOKEN = "7667262262:AAFYkfcdd8OZQskNYQPJ9KbVO8rGE3rvouI"
+ADMIN_IDS = [1198920849]
 
 
 # Model Configuration
