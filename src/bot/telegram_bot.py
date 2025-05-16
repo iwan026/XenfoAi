@@ -85,6 +85,47 @@ class TelegramBot:
                 "❌ Terjadi kesalahan saat mengecek status sistem."
             )
 
+    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        welcome_message = (
+            "🤖 *Selamat datang di Bot Prediksi Forex!*\n\n"
+            "*Perintah yang tersedia:*\n\n"
+            "📊 */prediksi* [PAIR] [TIMEFRAME]\n"
+            "   Contoh: /prediksi EURUSD H1\n\n"
+            "🔄 */train* [PAIR] [TIMEFRAME]\n"
+            "   Contoh: /train EURUSD H1\n\n"
+            "📋 */symbols*\n"
+            "   Menampilkan daftar pair yang tersedia\n\n"
+            "⏱ */timeframes* [PAIR]\n"
+            "   Menampilkan timeframe yang tersedia untuk pair tertentu\n\n"
+            "❓ */help*\n"
+            "   Menampilkan bantuan lengkap\n\n"
+            "💡 *Tips:* Gunakan /symbols untuk melihat pair yang tersedia"
+        )
+        await update.message.reply_text(welcome_message, parse_mode="Markdown")
+
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        help_message = (
+            "📚 *Panduan Penggunaan Bot Prediksi Forex*\n\n"
+            "*1. Prediksi Forex*\n"
+            "   Perintah: */prediksi* [PAIR] [TIMEFRAME]\n"
+            "   Contoh: `/prediksi EURUSD H1`\n\n"
+            "   Timeframe yang tersedia:\n"
+            "   M1, M5, M15, H1, H4, D1, W1\n\n"
+            "*2. Melatih Model*\n"
+            "   Perintah: */train* [PAIR] [TIMEFRAME]\n"
+            "   Contoh: `/train EURUSD H1`\n\n"
+            "*3. Melihat Pair Tersedia*\n"
+            "   Perintah: */symbols*\n\n"
+            "*4. Melihat Timeframe Tersedia*\n"
+            "   Perintah: */timeframes* [PAIR]\n"
+            "   Contoh: `/timeframes EURUSD`\n\n"
+            "❗ *Catatan:*\n"
+            "- Pastikan pair dan timeframe tersedia\n"
+            "- Proses pelatihan membutuhkan waktu beberapa menit\n"
+            "- Data real-time diambil dari MetaTrader 5"
+        )
+        await update.message.reply_text(help_message, parse_mode="Markdown")
+
     async def predict_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Membuat prediksi"""
         try:
