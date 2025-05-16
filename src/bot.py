@@ -13,7 +13,7 @@ from telegram.ext import (
 )
 
 from config import BOT_TOKEN, ADMIN_IDS, TIMEFRAMES, SYMBOLS, ModelConfig
-from model import ForexModel
+from src.model import ForexModel
 
 logger = logging.getLogger(__name__)
 
