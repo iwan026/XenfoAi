@@ -24,31 +24,30 @@ logger = logging.getLogger(__name__)
 class TransformerBlock(tf.keras.layers.Layer):
     """Transformer block untuk sequence processing"""
 
-    def __init__(self, embed_dim, num_heads, ff_dim, rate=0.1):
-        super(TransformerBlock, self).__init__()
-        self.embed_dim = embed_dim  # Tambahkan ini untuk tracking dimensi
+    def __init__(self, symbol: str, timeframe: str):
+        """Inisialisasi model forex"""
+        self.symbol = symbol.upper()
+        self.timeframe = timeframe.upper()
+        self.config = ModelConfig()
 
-        # Pastikan key_dim sesuai dengan embed_dim
-        self.att = tf.keras.layers.MultiHeadAttention(
-            num_heads=num_heads,
-            key_dim=embed_dim // num_heads,  # Bagi embed_dim dengan num_heads
-        )
+        # Inisialisasi model
+        self.xgb_model = None
+        self.deep_model = None
 
-        # Dense layers untuk feed forward network
-        self.ffn = tf.keras.Sequential(
-            [
-                tf.keras.layers.Dense(ff_dim, activation="relu"),
-                tf.keras.layers.Dense(
-                    embed_dim
-                ),  # Output dim harus sama dengan embed_dim
-            ]
-        )
+        # Setup paths
+        self.model_dir = Path("models") / self.symbol
+        self.model_dir.mkdir(parents=True, exist_ok=True)
 
-        # Normalization dan dropout layers
-        self.layernorm1 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
-        self.layernorm2 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
-        self.dropout1 = tf.keras.layers.Dropout(rate)
-        self.dropout2 = tf.keras.layers.Dropout(rate)
+        # Validate data file exists
+        data_file = Path(f"datasets/{self.symbol}/{self.symbol}_{self.timeframe}.csv")
+        if not data_file.exists():
+            raise FileNotFoundError(
+                f"Data file not found: {data_file}\n"
+                f"Please ensure the file exists in the datasets folder"
+            )
+
+        # Load atau buat model baru
+        self._load_or_create_models()
 
     def build(self, input_shape):
         """Build layer dengan input shape yang diberikan"""
@@ -258,30 +257,95 @@ class ForexModel:
         return getattr(mt5, TIMEFRAMES[self.timeframe])
 
     def _get_historical_data(self, num_candles: int = None) -> Optional[pd.DataFrame]:
-        """Ambil data historis dari MT5"""
+        """Ambil data historis dari CSV file"""
         try:
-            # Jika num_candles tidak ditentukan, gunakan 2x sequence length
-            if num_candles is None:
-                num_candles = self.config.SEQUENCE_LENGTH * 2
-
-            # Get data from MT5
-            rates = mt5.copy_rates_from_pos(
-                self.symbol, self._get_mt5_timeframe(), 0, num_candles
+            # Construct file path
+            file_path = Path(
+                f"datasets/{self.symbol}/{self.symbol}_{self.timeframe}.csv"
             )
+            logger.info(f"Reading data from {file_path}")
 
-            if rates is None:
-                raise Exception(f"Failed to get data: {mt5.last_error()}")
+            if not file_path.exists():
+                raise FileNotFoundError(f"Data file not found: {file_path}")
 
-            # Convert to DataFrame
-            df = pd.DataFrame(rates)
-            df["time"] = pd.to_datetime(df["time"], unit="s")
+            # Read CSV file
+            df = pd.read_csv(file_path)
+
+            # Convert time column
+            df["time"] = pd.to_datetime(df["time"], format="%d.%m.%Y %H:%M:%S.%f")
+
+            # Validate required columns
+            required_columns = ["time", "open", "high", "low", "close", "volume"]
+            missing_columns = [col for col in required_columns if col not in df.columns]
+
+            if missing_columns:
+                raise ValueError(f"Missing required columns in CSV: {missing_columns}")
+
+            # Set time as index
             df.set_index("time", inplace=True)
+
+            # Sort by time ascending
+            df.sort_index(inplace=True)
+
+            # If num_candles specified, get only the last n candles
+            if num_candles:
+                df = df.tail(num_candles)
+
+            # Basic data validation
+            if df.empty:
+                raise ValueError("DataFrame is empty after processing")
+
+            if df.isnull().any().any():
+                logger.warning(
+                    "Data contains NaN values, filling with forward fill method"
+                )
+                df = df.fillna(method="ffill").fillna(method="bfill")
+
+            logger.info(f"Successfully loaded {len(df)} candles from CSV")
+            logger.debug(f"Data columns: {df.columns.tolist()}")
+            logger.debug(f"Data sample:\n{df.head()}")
 
             return df
 
         except Exception as e:
-            logger.error(f"Error getting historical data: {e}")
+            logger.error(f"Error reading historical data: {e}")
+            raise
+
+    def _get_realtime_data(self, num_candles: int = None) -> Optional[pd.DataFrame]:
+        """Ambil data realtime dari MT5 untuk prediksi"""
+        try:
+            if not mt5.initialize():
+                raise Exception(f"MT5 initialization failed: {mt5.last_error()}")
+
+            if not mt5.login(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER):
+                raise Exception(f"MT5 login failed: {mt5.last_error()}")
+
+            # Get latest data from MT5
+            rates = mt5.copy_rates_from_pos(
+                self.symbol,
+                self._get_mt5_timeframe(),
+                0,
+                num_candles or self.config.SEQUENCE_LENGTH,
+            )
+
+            if rates is None or len(rates) == 0:
+                raise Exception("No data received from MT5")
+
+            df = pd.DataFrame(rates)
+            df["time"] = pd.to_datetime(df["time"], unit="s")
+            df.set_index("time", inplace=True)
+
+            # Rename tick_volume to volume if needed
+            if "tick_volume" in df.columns and "volume" not in df.columns:
+                df["volume"] = df["tick_volume"]
+
+            return df
+
+        except Exception as e:
+            logger.error(f"Error getting realtime data: {e}")
             return None
+        finally:
+            mt5.shutdown()
 
     def _calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Hitung indikator teknikal"""
@@ -630,10 +694,15 @@ class ForexModel:
             return False
 
     def predict(self) -> Optional[Dict]:
-        """Membuat prediksi"""
+        """Membuat prediksi menggunakan data realtime"""
         try:
-            # Get latest data
-            df = self._get_historical_data(self.config.SEQUENCE_LENGTH + 1)
+            # Get realtime data for prediction
+            df = self._get_realtime_data(self.config.SEQUENCE_LENGTH + 1)
+            if df is None:
+                logger.error("Failed to get realtime data")
+                # Fallback to latest data from CSV
+                df = self._get_historical_data(self.config.SEQUENCE_LENGTH + 1)
+
             if df is None:
                 return None
 
