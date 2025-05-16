@@ -116,15 +116,8 @@ class ForexModel:
         # Create model
         model = models.Model(inputs=[tech_input, price_input], outputs=output)
 
-        # Learning rate scheduler
-        lr_schedule = optimizers.schedules.ExponentialDecay(
-            initial_learning_rate=self.config.LEARNING_RATE,
-            decay_steps=1000,
-            decay_rate=0.9,
-        )
-
         model.compile(
-            optimizer=optimizers.Adam(learning_rate=lr_schedule),
+            optimizer=optimizers.Adam(learning_rate=self.config.LEARNING_RATE),
             loss="binary_crossentropy",
             metrics=[
                 "accuracy",
@@ -143,12 +136,23 @@ class ForexModel:
         try:
             if model_path.exists():
                 logger.info(f"Loading model from {model_path}")
-                self.model = models.load_model(model_path)
+                # Load model tanpa optimizer state
+                self.model = models.load_model(model_path, compile=False)
+                # Recompile dengan setting baru
+                self.model.compile(
+                    optimizer=optimizers.Adam(learning_rate=self.config.LEARNING_RATE),
+                    loss="binary_crossentropy",
+                    metrics=[
+                        "accuracy",
+                        tf.keras.metrics.Precision(name="precision"),
+                        tf.keras.metrics.Recall(name="recall"),
+                        tf.keras.metrics.AUC(name="auc"),
+                    ],
+                )
             else:
                 logger.info("Creating new model")
                 self.model = self._build_model()
                 self.model.summary(print_fn=logger.info)
-
         except Exception as e:
             logger.error(f"Error in model initialization: {e}")
             raise
@@ -622,6 +626,10 @@ class ForexModel:
                         monitor="val_loss",
                         save_best_only=True,
                         save_weights_only=False,
+                    ),
+                    # Tambahkan LearningRateScheduler sebagai callback terpisah
+                    callbacks.LearningRateScheduler(
+                        lambda epoch, lr: lr * 0.9 if epoch % 5 == 0 else lr
                     ),
                 ]
 
