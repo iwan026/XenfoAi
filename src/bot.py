@@ -12,7 +12,7 @@ from telegram.ext import (
     filters,
 )
 
-from config import BOT_TOKEN, ADMIN_IDS, TIMEFRAMES, SYMBOLS, ModelConfig
+from config import BOT_TOKEN, ADMIN_IDS, SYMBOLS
 from src.model import ForexModel
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,6 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("help", self.help_command))
 
         # Trading commands
-        self.application.add_handler(CommandHandler("train", self.train_command))
         self.application.add_handler(CommandHandler("predict", self.predict_command))
 
         # Admin commands
@@ -63,76 +62,23 @@ class TelegramBot:
         """Handle /help command"""
         help_msg = (
             "🤖 *Bot Commands*\n\n"
-            "*/predict [PAIR] [TIMEFRAME]* - Make prediction\n"
-            "Example: `/predict EURUSD H1`\n\n"
-            "*/train [PAIR] [TIMEFRAME]* - Train model (admin)\n\n"
-            "Available pairs: " + ", ".join(SYMBOLS) + "\n"
-            "Available timeframes: " + ", ".join(TIMEFRAMES.keys())
+            "*/predict [PAIR]* - Make prediction for H1 timeframe\n"
+            "Example: `/predict EURUSD`\n\n"
+            "Available pairs: " + ", ".join(SYMBOLS)
         )
         await update.message.reply_text(help_msg, parse_mode="Markdown")
-
-    async def train_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /train command"""
-        if not await self.check_admin(update):
-            return
-
-        try:
-            args = context.args
-            if len(args) != 2:
-                await update.message.reply_text(
-                    "Usage: /train [PAIR] [TIMEFRAME]\nExample: /train EURUSD H1"
-                )
-                return
-
-            symbol = args[0].upper()
-            timeframe = args[1].upper()
-
-            if symbol not in SYMBOLS:
-                await update.message.reply_text(
-                    f"Invalid pair. Available: {', '.join(SYMBOLS)}"
-                )
-                return
-
-            if timeframe not in TIMEFRAMES:
-                await update.message.reply_text(
-                    f"Invalid timeframe. Available: {', '.join(TIMEFRAMES.keys())}"
-                )
-                return
-
-            # Initialize model
-            model_key = f"{symbol}_{timeframe}"
-            self.active_models[model_key] = ForexModel(symbol, timeframe)
-
-            # Start training
-            msg = await update.message.reply_text(
-                f"⏳ Training {symbol} {timeframe} model..."
-            )
-
-            success = await asyncio.get_event_loop().run_in_executor(
-                None, self.active_models[model_key].train
-            )
-
-            if success:
-                await msg.edit_text(f"✅ Training completed for {symbol} {timeframe}!")
-            else:
-                await msg.edit_text(f"❌ Training failed for {symbol} {timeframe}")
-
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error: {str(e)}")
-            logger.error(f"Train error: {e}")
 
     async def predict_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /predict command with realtime data"""
         try:
             args = context.args
-            if len(args) != 2:
+            if len(args) != 1:
                 await update.message.reply_text(
-                    "Usage: /predict [PAIR] [TIMEFRAME]\nExample: /predict EURUSD H1"
+                    "Usage: /predict [PAIR]\nExample: /predict EURUSD"
                 )
                 return
 
             symbol = args[0].upper()
-            timeframe = args[1].upper()
 
             if symbol not in SYMBOLS:
                 await update.message.reply_text(
@@ -140,20 +86,14 @@ class TelegramBot:
                 )
                 return
 
-            if timeframe not in TIMEFRAMES:
-                await update.message.reply_text(
-                    f"Invalid timeframe. Available: {', '.join(TIMEFRAMES.keys())}"
-                )
-                return
-
             # Get or create model
-            model_key = f"{symbol}_{timeframe}"
+            model_key = symbol
             if model_key not in self.active_models:
-                self.active_models[model_key] = ForexModel(symbol, timeframe)
+                self.active_models[model_key] = ForexModel(symbol)
 
             # Start processing message
             processing_msg = await update.message.reply_text(
-                f"⏳ Getting realtime data for {symbol} {timeframe}..."
+                f"⏳ Getting realtime data for {symbol} H1..."
             )
 
             try:
@@ -165,7 +105,12 @@ class TelegramBot:
                 )
 
                 if result is not None:
-                    signal = "🟢 BUY" if result["prediction"] > 0.5 else "🔴 SELL"
+                    short_term_signal = (
+                        "🟢 BUY" if result["short_term"] > 0.5 else "🔴 SELL"
+                    )
+                    long_term_signal = (
+                        "🟢 BUY" if result["long_term"] > 0.5 else "🔴 SELL"
+                    )
 
                     # Prepare indicators message
                     indicators = result["indicators"]
@@ -173,9 +118,10 @@ class TelegramBot:
                         "*Technical Indicators:*\n"
                         f"• EMA 9: {indicators['ema_9']:.4f}\n"
                         f"• EMA 21: {indicators['ema_21']:.4f}\n"
-                        f"• SMA 50: {indicators['sma_50']:.4f}\n"
+                        f"• EMA 50: {indicators['ema_50']:.4f}\n"
                         f"• RSI: {indicators['rsi']:.2f}\n"
-                        f"• MACD: {indicators['macd']:.4f}\n"
+                        f"• MACD: {indicators['macd']:.4f} (Signal: {indicators['macd_signal']:.4f})\n"
+                        f"• Stoch: K={indicators['stoch_k']:.2f}, D={indicators['stoch_d']:.2f}\n"
                     )
 
                     # Send chart image
@@ -183,9 +129,9 @@ class TelegramBot:
                         await update.message.reply_photo(
                             photo=chart_file,
                             caption=(
-                                f"📊 *{symbol} {timeframe}*\n\n"
-                                f"Signal: {signal}\n"
-                                f"Confidence: {result['confidence']:.2%}\n\n"
+                                f"📊 *{symbol} H1*\n\n"
+                                f"*Short Term (4h):* {short_term_signal} ({result['short_term']:.2%})\n"
+                                f"*Long Term (24h):* {long_term_signal} ({result['long_term']:.2%})\n\n"
                                 f"{indicators_msg}\n"
                                 f"🕒 {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
                             ),
