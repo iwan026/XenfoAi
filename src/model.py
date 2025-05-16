@@ -232,10 +232,18 @@ class ForexModel:
             self.xgb_model = xgb.XGBClassifier()
             self.xgb_model.load_model(str(xgb_path))
 
-            # Load Deep Learning model
-            self.deep_model = tf.keras.models.load_model(
-                str(deep_path), custom_objects={"TransformerBlock": TransformerBlock}
-            )
+            # Try loading new format first, then fall back to old format
+            deep_path_keras = deep_path.with_suffix(".keras")
+            try:
+                self.deep_model = tf.keras.models.load_model(
+                    str(deep_path_keras),
+                    custom_objects={"TransformerBlock": TransformerBlock},
+                )
+            except:
+                self.deep_model = tf.keras.models.load_model(
+                    str(deep_path),
+                    custom_objects={"TransformerBlock": TransformerBlock},
+                )
 
         except Exception as e:
             logger.error(f"Error loading models: {e}")
@@ -688,54 +696,81 @@ class ForexModel:
             # Get realtime data for prediction
             df = self._get_realtime_data(self.config.SEQUENCE_LENGTH + 1)
             if df is None:
-                logger.error("Failed to get realtime data")
+                logger.info("Falling back to historical data...")
                 # Fallback to latest data from CSV
                 df = self._get_historical_data(self.config.SEQUENCE_LENGTH + 1)
 
             if df is None:
+                logger.error("No data available for prediction")
                 return None
 
             # Prepare data
             data = self._prepare_data(df, is_training=False)
+            if data is None:
+                logger.error("Failed to prepare data for prediction")
+                return None
 
             # Make predictions
-            xgb_pred = self.xgb_model.predict_proba(
-                data["technical_features"].reshape(1, -1)
-            )[0, 1]
+            try:
+                xgb_pred = self.xgb_model.predict_proba(
+                    data["technical_features"].reshape(1, -1)
+                )[0, 1]
 
-            deep_pred = self.deep_model.predict(
-                [data["technical_features"], data["price_features_cnn"]], verbose=0
-            )[0, 0]
+                deep_pred = self.deep_model.predict(
+                    [data["technical_features"], data["price_features_cnn"]], verbose=0
+                )[0, 0]
 
-            # Combine predictions
-            final_pred = (xgb_pred + deep_pred) / 2
-            confidence = abs(final_pred - 0.5) * 2
+                # Combine predictions
+                final_pred = (xgb_pred + deep_pred) / 2
+                confidence = abs(final_pred - 0.5) * 2
 
-            # Get signals
-            latest_data = df.iloc[-1]
+                # Get latest data with indicators
+                latest_data = df.iloc[-1]
 
-            result = {
-                "symbol": self.symbol,
-                "timeframe": self.timeframe,
-                "prediction": float(final_pred),
-                "confidence": float(confidence),
-                "signals": {
+                # Validate technical indicators exist
+                required_indicators = [
+                    "rsi_14",
+                    "macd",
+                    "macd_signal",
+                    "sma_20",
+                    "sma_50",
+                ]
+                if not all(
+                    indicator in latest_data.index for indicator in required_indicators
+                ):
+                    raise ValueError(
+                        f"Missing required indicators: {[ind for ind in required_indicators if ind not in latest_data.index]}"
+                    )
+
+                # Get signals with safe access
+                signals = {
                     "rsi": "Overbought"
-                    if latest_data["rsi_14"] > 70
+                    if latest_data.get("rsi_14", 50) > 70
                     else "Oversold"
-                    if latest_data["rsi_14"] < 30
+                    if latest_data.get("rsi_14", 50) < 30
                     else "Neutral",
                     "macd": "Buy"
-                    if latest_data["macd"] > latest_data["macd_signal"]
+                    if latest_data.get("macd", 0) > latest_data.get("macd_signal", 0)
                     else "Sell",
                     "ma": "Buy"
-                    if latest_data["sma_20"] > latest_data["sma_50"]
+                    if latest_data.get("sma_20", 0) > latest_data.get("sma_50", 0)
                     else "Sell",
-                },
-                "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-            }
+                }
 
-            return result
+                result = {
+                    "symbol": self.symbol,
+                    "timeframe": self.timeframe,
+                    "prediction": float(final_pred),
+                    "confidence": float(confidence),
+                    "signals": signals,
+                    "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+
+                return result
+
+            except Exception as e:
+                logger.error(f"Error during prediction calculation: {e}")
+                return None
 
         except Exception as e:
             logger.error(f"Error in prediction: {e}")
@@ -745,8 +780,14 @@ class ForexModel:
         """Save models to disk"""
         try:
             xgb_path, deep_path = self._get_model_paths()
+
+            # Save XGBoost model
             self.xgb_model.save_model(str(xgb_path))
-            self.deep_model.save(str(deep_path))
+
+            # Save Deep Learning model in new Keras format
+            deep_path_keras = deep_path.with_suffix(".keras")
+            self.deep_model.save(str(deep_path_keras), save_format="keras")
+
             logger.info(f"Models saved to {self.model_dir}")
 
         except Exception as e:
