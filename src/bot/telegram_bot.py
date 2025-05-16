@@ -252,6 +252,82 @@ class TelegramBot:
             logger.error(f"Error di train_command: {e}")
             await update.message.reply_text(f"❌ Terjadi kesalahan: {str(e)}")
 
+    async def list_symbols_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        try:
+            available_symbols = get_available_symbols()
+            if not available_symbols:
+                await update.message.reply_text("❌ Tidak ada pair yang tersedia.")
+                return
+
+            message = "📊 *Pair yang tersedia:*\n\n"
+            for symbol in available_symbols:
+                message += f"• {symbol}\n"
+
+            await update.message.reply_text(message, parse_mode="Markdown")
+
+        except Exception as e:
+            logger.error(f"Error di list_symbols_command: {str(e)}")
+            await update.message.reply_text(
+                "❌ Terjadi kesalahan saat mengambil daftar pair."
+            )
+
+    async def list_timeframes_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        try:
+            args = context.args
+            if len(args) != 1:
+                await update.message.reply_text(
+                    "❌ Format perintah salah.\n"
+                    "Gunakan: /timeframes [PAIR]\n"
+                    "Contoh: /timeframes EURUSD"
+                )
+                return
+
+            symbol = args[0].upper()
+            available_timeframes = get_available_timeframes(symbol)
+
+            if not available_timeframes:
+                await update.message.reply_text(
+                    f"❌ Tidak ada timeframe tersedia untuk {symbol}."
+                )
+                return
+
+            message = f"⏱ *Timeframe tersedia untuk {symbol}:*\n\n"
+            for tf in available_timeframes:
+                message += f"• {tf}\n"
+
+            await update.message.reply_text(message, parse_mode="Markdown")
+
+        except Exception as e:
+            logger.error(f"Error di list_timeframes_command: {e}")
+            await update.message.reply_text(f"❌ Terjadi kesalahan: {str(e)}")
+
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        message_text = update.message.text.lower()
+
+        if "prediksi" in message_text:
+            words = message_text.split()
+            if len(words) >= 3:
+                for i, word in enumerate(words):
+                    if word == "prediksi" and i + 2 < len(words):
+                        context.args = [words[i + 1], words[i + 2]]
+                        await self.predict_command(update, context)
+                        return
+
+            await update.message.reply_text(
+                "❌ Format pesan salah.\n"
+                "Gunakan: /prediksi [PAIR] [TIMEFRAME]\n"
+                "Contoh: /prediksi EURUSD H1"
+            )
+        else:
+            await update.message.reply_text(
+                "❓ Saya tidak mengerti pesan Anda.\n"
+                "Gunakan /help untuk melihat perintah yang tersedia."
+            )
+
     def run(self):
         """Run bot"""
         logger.info("Starting bot...")
