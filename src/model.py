@@ -26,27 +26,66 @@ class TransformerBlock(tf.keras.layers.Layer):
 
     def __init__(self, embed_dim, num_heads, ff_dim, rate=0.1):
         super(TransformerBlock, self).__init__()
+        self.embed_dim = embed_dim  # Tambahkan ini untuk tracking dimensi
+
+        # Pastikan key_dim sesuai dengan embed_dim
         self.att = tf.keras.layers.MultiHeadAttention(
-            num_heads=num_heads, key_dim=embed_dim
+            num_heads=num_heads,
+            key_dim=embed_dim // num_heads,  # Bagi embed_dim dengan num_heads
         )
+
+        # Dense layers untuk feed forward network
         self.ffn = tf.keras.Sequential(
             [
                 tf.keras.layers.Dense(ff_dim, activation="relu"),
-                tf.keras.layers.Dense(embed_dim),
+                tf.keras.layers.Dense(
+                    embed_dim
+                ),  # Output dim harus sama dengan embed_dim
             ]
         )
+
+        # Normalization dan dropout layers
         self.layernorm1 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
         self.layernorm2 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
         self.dropout1 = tf.keras.layers.Dropout(rate)
         self.dropout2 = tf.keras.layers.Dropout(rate)
 
+    def build(self, input_shape):
+        """Build layer dengan input shape yang diberikan"""
+        super(TransformerBlock, self).build(input_shape)
+
     def call(self, inputs, training=False):
+        """Forward pass"""
+        # Project input ke dimensi yang sesuai jika perlu
+        if inputs.shape[-1] != self.embed_dim:
+            inputs = tf.keras.layers.Dense(self.embed_dim)(inputs)
+
+        # Multi-head attention
         attn_output = self.att(inputs, inputs)
         attn_output = self.dropout1(attn_output, training=training)
         out1 = self.layernorm1(inputs + attn_output)
+
+        # Feed forward network
         ffn_output = self.ffn(out1)
         ffn_output = self.dropout2(ffn_output, training=training)
         return self.layernorm2(out1 + ffn_output)
+
+    def compute_output_shape(self, input_shape):
+        """Compute output shape"""
+        return input_shape[0], input_shape[1], self.embed_dim
+
+    def get_config(self):
+        """Get layer config"""
+        config = super(TransformerBlock, self).get_config()
+        config.update(
+            {
+                "embed_dim": self.embed_dim,
+                "num_heads": self.att.num_heads,
+                "ff_dim": self.ffn.layers[0].units,
+                "rate": self.dropout1.rate,
+            }
+        )
+        return config
 
 
 class ForexModel:
@@ -111,7 +150,7 @@ class ForexModel:
     def _build_models(self):
         """Build arsitektur model"""
         try:
-            # XGBoost model
+            # XGBoost model tetap sama
             self.xgb_model = xgb.XGBClassifier(
                 max_depth=6,
                 learning_rate=0.01,
@@ -124,16 +163,22 @@ class ForexModel:
                 early_stopping_rounds=10,
             )
 
-            # Deep Learning model
+            # Hitung input dimensions
+            num_technical_features = len(self.config.TECHNICAL_FEATURES)
+
+            # Adjust embedding dimension to match input
+            embed_dim = 16  # Sesuaikan dengan input dimension
+
+            # Input layers
             technical_input = tf.keras.layers.Input(
-                shape=(self.config.SEQUENCE_LENGTH, len(self.config.TECHNICAL_FEATURES))
+                shape=(self.config.SEQUENCE_LENGTH, num_technical_features)
             )
 
             price_input = tf.keras.layers.Input(
                 shape=(self.config.SEQUENCE_LENGTH, len(self.config.PRICE_FEATURES), 1)
             )
 
-            # CNN branch
+            # CNN branch sama seperti sebelumnya
             cnn = price_input
             for filters, kernel_size, pool_size in zip(
                 self.config.CNN_FILTERS,
@@ -160,12 +205,12 @@ class ForexModel:
                     dropout=self.config.LSTM_DROPOUT,
                 )(lstm)
 
-            # Transformer branch
+            # Transformer branch dengan parameter yang disesuaikan
             transformer_block = TransformerBlock(
-                self.config.TRANSFORMER_HEAD_SIZE,
-                self.config.TRANSFORMER_NUM_HEADS,
-                self.config.TRANSFORMER_FF_DIM,
-                self.config.TRANSFORMER_DROPOUT,
+                embed_dim=embed_dim,  # Sesuaikan dengan input dimension
+                num_heads=4,  # Pastikan embed_dim bisa dibagi num_heads
+                ff_dim=embed_dim * 4,  # Biasanya 4x embed_dim
+                rate=self.config.TRANSFORMER_DROPOUT,
             )
 
             transformer = transformer_block(technical_input)
