@@ -3,11 +3,13 @@ import pandas as pd
 import tensorflow as tf
 import MetaTrader5 as mt5
 import matplotlib.dates as mdates
-from tensorflow.keras import layers, models, optimizers, callbacks
-from sklearn.model_selection import train_test_split
+from tensorflow.keras import layers, models, optimizers, callbacks, regularizers
+from sklearn.model_selection import TimeSeriesSplit
 from sklearn.utils.class_weight import compute_class_weight
+from sklearn.metrics import classification_report, confusion_matrix
 from mplfinance.original_flavor import candlestick_ohlc
 import matplotlib
+import seaborn as sns
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -58,7 +60,7 @@ class ForexModel:
         return self.dataset_dir / f"{self.symbol}_{self.timeframe}.csv"
 
     def _build_model(self):
-        """Build CNN-LSTM model architecture"""
+        """Build CNN-LSTM model architecture with reduced complexity"""
         # Technical features input (for LSTM)
         tech_input = layers.Input(
             shape=(self.config.SEQUENCE_LENGTH, len(self.config.TECHNICAL_INDICATORS)),
@@ -71,7 +73,7 @@ class ForexModel:
             name="price_input",
         )
 
-        # CNN Branch
+        # CNN Branch with reduced layers and regularization
         cnn = price_input
         for filters, kernel_size, pool_size in zip(
             self.config.CNN_FILTERS,
@@ -79,7 +81,11 @@ class ForexModel:
             self.config.CNN_POOL_SIZES,
         ):
             cnn = layers.Conv2D(
-                filters, kernel_size, activation="relu", padding="same"
+                filters,
+                kernel_size,
+                activation="relu",
+                padding="same",
+                kernel_regularizer=regularizers.l2(self.config.L2_REG),
             )(cnn)
             cnn = layers.MaxPooling2D(pool_size)(cnn)
             cnn = layers.BatchNormalization()(cnn)
@@ -87,22 +93,45 @@ class ForexModel:
         cnn = layers.Flatten()(cnn)
         cnn = layers.Dropout(self.config.DROPOUT_RATE)(cnn)
 
-        # LSTM Branch
-        lstm = layers.LSTM(self.config.LSTM_UNITS, dropout=self.config.DROPOUT_RATE)(
-            tech_input
-        )
+        # LSTM Branch with regularization
+        lstm = layers.LSTM(
+            self.config.LSTM_UNITS,
+            dropout=self.config.DROPOUT_RATE,
+            kernel_regularizer=regularizers.l2(self.config.L2_REG),
+        )(tech_input)
 
         # Combine branches
         combined = layers.concatenate([cnn, lstm])
-        output = layers.Dense(1, activation="sigmoid")(combined)
+
+        # Dense layer with regularization
+        dense = layers.Dense(
+            32,
+            activation="relu",
+            kernel_regularizer=regularizers.l2(self.config.L2_REG),
+        )(combined)
+        dense = layers.Dropout(self.config.DROPOUT_RATE)(dense)
+
+        output = layers.Dense(1, activation="sigmoid")(dense)
 
         # Create model
         model = models.Model(inputs=[tech_input, price_input], outputs=output)
 
+        # Learning rate scheduler
+        lr_schedule = optimizers.schedules.ExponentialDecay(
+            initial_learning_rate=self.config.LEARNING_RATE,
+            decay_steps=1000,
+            decay_rate=0.9,
+        )
+
         model.compile(
-            optimizer=optimizers.Adam(self.config.LEARNING_RATE),
+            optimizer=optimizers.Adam(learning_rate=lr_schedule),
             loss="binary_crossentropy",
-            metrics=["accuracy"],
+            metrics=[
+                "accuracy",
+                tf.keras.metrics.Precision(name="precision"),
+                tf.keras.metrics.Recall(name="recall"),
+                tf.keras.metrics.AUC(name="auc"),
+            ],
         )
 
         return model
@@ -125,7 +154,7 @@ class ForexModel:
             raise
 
     def _calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate technical indicators from price data"""
+        """Calculate reduced set of technical indicators from price data"""
         df = df.copy()
 
         # RSI
@@ -135,12 +164,10 @@ class ForexModel:
         rs = gain / loss
         df["rsi_14"] = 100 - (100 / (1 + rs))
 
-        # MACD
+        # MACD (simplified - only MACD line)
         exp1 = df["close"].ewm(span=12, adjust=False).mean()
         exp2 = df["close"].ewm(span=26, adjust=False).mean()
         df["macd"] = exp1 - exp2
-        df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
-        df["macd_hist"] = df["macd"] - df["macd_signal"]
 
         # Bollinger Bands
         df["bb_middle"] = df["close"].rolling(window=20).mean()
@@ -149,8 +176,6 @@ class ForexModel:
         df["bb_lower"] = df["bb_middle"] - 2 * std
 
         # Moving Averages
-        df["sma_20"] = df["close"].rolling(window=20).mean()
-        df["sma_50"] = df["close"].rolling(window=50).mean()
         df["ema_9"] = df["close"].ewm(span=9, adjust=False).mean()
         df["ema_21"] = df["close"].ewm(span=21, adjust=False).mean()
 
@@ -174,18 +199,6 @@ class ForexModel:
         dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
         df["adx_14"] = dx.ewm(alpha=1 / 14).mean()
 
-        # CCI
-        tp = (df["high"] + df["low"] + df["close"]) / 3
-        df["cci_20"] = (tp - tp.rolling(window=20).mean()) / (
-            0.015 * tp.rolling(window=20).std()
-        )
-
-        # Stochastic
-        low_min = df["low"].rolling(window=14).min()
-        high_max = df["high"].rolling(window=14).max()
-        df["stoch_k"] = 100 * (df["close"] - low_min) / (high_max - low_min)
-        df["stoch_d"] = df["stoch_k"].rolling(window=3).mean()
-
         # Clean NaN values
         df = df.fillna(method="ffill").fillna(method="bfill")
 
@@ -207,13 +220,10 @@ class ForexModel:
             next_close = df["close"].iloc[i + self.config.SEQUENCE_LENGTH]
             current_close = df["close"].iloc[i + self.config.SEQUENCE_LENGTH - 1]
 
-            # Calculate price change percentage
+            # Calculate price change percentage with increased threshold
             price_change = (next_close - current_close) / current_close
-
-            # Create binary target
             target = 1 if price_change > self.config.TARGET_THRESHOLD else 0
             targets.append(target)
-
             sequences.append(seq)
 
         # Prepare feature arrays
@@ -442,6 +452,63 @@ class ForexModel:
             logger.error(f"Error generating chart: {e}")
             raise
 
+    def _plot_metrics(self, history, model_name: str):
+        """Plot training metrics including confusion matrix"""
+        plt.figure(figsize=(18, 12))
+
+        # Plot loss
+        plt.subplot(2, 3, 1)
+        plt.plot(history.history["loss"], label="Train Loss")
+        plt.plot(history.history["val_loss"], label="Val Loss")
+        plt.title("Model Loss")
+        plt.ylabel("Loss")
+        plt.xlabel("Epoch")
+        plt.legend()
+
+        # Plot accuracy
+        plt.subplot(2, 3, 2)
+        plt.plot(history.history["accuracy"], label="Train Accuracy")
+        plt.plot(history.history["val_accuracy"], label="Val Accuracy")
+        plt.title("Model Accuracy")
+        plt.ylabel("Accuracy")
+        plt.xlabel("Epoch")
+        plt.legend()
+
+        # Plot precision
+        plt.subplot(2, 3, 3)
+        plt.plot(history.history["precision"], label="Train Precision")
+        plt.plot(history.history["val_precision"], label="Val Precision")
+        plt.title("Model Precision")
+        plt.ylabel("Precision")
+        plt.xlabel("Epoch")
+        plt.legend()
+
+        # Plot recall
+        plt.subplot(2, 3, 4)
+        plt.plot(history.history["recall"], label="Train Recall")
+        plt.plot(history.history["val_recall"], label="Val Recall")
+        plt.title("Model Recall")
+        plt.ylabel("Recall")
+        plt.xlabel("Epoch")
+        plt.legend()
+
+        # Plot AUC
+        plt.subplot(2, 3, 5)
+        plt.plot(history.history["auc"], label="Train AUC")
+        plt.plot(history.history["val_auc"], label="Val AUC")
+        plt.title("Model AUC")
+        plt.ylabel("AUC")
+        plt.xlabel("Epoch")
+        plt.legend()
+
+        # Save plot
+        plot_path = PLOTS_DIR / f"{model_name}_metrics.png"
+        plt.tight_layout()
+        plt.savefig(plot_path)
+        plt.close()
+
+        logger.info(f"Saved metrics plot to {plot_path}")
+
     def _get_realtime_data(self, num_candles: int = 60) -> pd.DataFrame:
         """Get realtime data from MT5 and calculate indicators"""
         try:
@@ -492,7 +559,7 @@ class ForexModel:
             mt5.shutdown()
 
     def train(self) -> bool:
-        """Train the model"""
+        """Train the model with time series split validation"""
         try:
             logger.info(f"Starting training for {self.symbol} {self.timeframe}")
 
@@ -500,65 +567,108 @@ class ForexModel:
             df = self._load_dataset()
             tech_features, price_features, targets = self._prepare_data(df)
 
-            # Split data
-            X_tech_train, X_tech_val, X_price_train, X_price_val, y_train, y_val = (
-                train_test_split(
-                    tech_features,
-                    price_features,
-                    targets,
-                    test_size=self.config.VALIDATION_SPLIT,
-                    shuffle=False,
+            # Check class distribution
+            class_counts = np.bincount(targets)
+            logger.info(
+                f"Class distribution: 0: {class_counts[0]}, 1: {class_counts[1]}"
+            )
+
+            # Time Series Split for validation
+            tscv = TimeSeriesSplit(n_splits=3)
+            fold = 0
+            best_val_loss = float("inf")
+
+            for train_index, val_index in tscv.split(tech_features):
+                fold += 1
+                logger.info(f"Training fold {fold}")
+
+                X_tech_train, X_tech_val = (
+                    tech_features[train_index],
+                    tech_features[val_index],
                 )
-            )
+                X_price_train, X_price_val = (
+                    price_features[train_index],
+                    price_features[val_index],
+                )
+                y_train, y_val = targets[train_index], targets[val_index]
 
-            # Compute class weights
-            class_weights = compute_class_weight(
-                "balanced", classes=np.unique(y_train), y=y_train
-            )
-            class_weights = dict(enumerate(class_weights))
+                # Compute class weights
+                class_weights = compute_class_weight(
+                    "balanced", classes=np.unique(y_train), y=y_train
+                )
+                class_weights = dict(enumerate(class_weights))
 
-            logger.info(f"Class weights: {class_weights}")
-            logger.info(f"Training samples: {len(y_train)}")
-            logger.info(f"Validation samples: {len(y_val)}")
+                logger.info(f"Fold {fold} class weights: {class_weights}")
+                logger.info(f"Fold {fold} training samples: {len(y_train)}")
+                logger.info(f"Fold {fold} validation samples: {len(y_val)}")
 
-            # Callbacks
-            callbacks_list = [
-                callbacks.EarlyStopping(
-                    monitor="val_loss",
-                    patience=self.config.PATIENCE,
-                    restore_best_weights=True,
-                ),
-                callbacks.ReduceLROnPlateau(
-                    monitor="val_loss", factor=0.5, patience=3, min_lr=1e-6
-                ),
-                callbacks.ModelCheckpoint(
-                    filepath=str(self._get_model_path()),
-                    monitor="val_loss",
-                    save_best_only=True,
-                ),
-            ]
+                # Callbacks
+                callbacks_list = [
+                    callbacks.EarlyStopping(
+                        monitor="val_loss",
+                        patience=self.config.PATIENCE,
+                        restore_best_weights=True,
+                        verbose=1,
+                    ),
+                    callbacks.ReduceLROnPlateau(
+                        monitor="val_loss",
+                        factor=0.5,
+                        patience=3,
+                        min_lr=1e-6,
+                        verbose=1,
+                    ),
+                    callbacks.ModelCheckpoint(
+                        filepath=str(self._get_model_path()),
+                        monitor="val_loss",
+                        save_best_only=True,
+                        save_weights_only=False,
+                    ),
+                ]
 
-            # Train model
-            history = self.model.fit(
-                [X_tech_train, X_price_train],
-                y_train,
-                batch_size=self.config.BATCH_SIZE,
-                epochs=self.config.EPOCHS,
-                validation_data=([X_tech_val, X_price_val], y_val),
-                class_weight=class_weights,
-                callbacks=callbacks_list,
-                verbose=1,
-            )
+                # Train model
+                history = self.model.fit(
+                    [X_tech_train, X_price_train],
+                    y_train,
+                    batch_size=self.config.BATCH_SIZE,
+                    epochs=self.config.EPOCHS,
+                    validation_data=([X_tech_val, X_price_val], y_val),
+                    class_weight=class_weights,
+                    callbacks=callbacks_list,
+                    verbose=1,
+                )
 
-            # Save training plot
+                # Track best model
+                current_val_loss = min(history.history["val_loss"])
+                if current_val_loss < best_val_loss:
+                    best_val_loss = current_val_loss
+                    best_history = history
+
+            # Save training plots and metrics
             model_name = f"{self.symbol}_{self.timeframe}"
-            self._plot_training_history(history, model_name)
+            self._plot_metrics(best_history, model_name)
+
+            # Generate and save confusion matrix
+            y_pred = (self.model.predict([X_tech_val, X_price_val]) > 0.5).astype(int)
+            cm = confusion_matrix(y_val, y_pred)
+
+            plt.figure(figsize=(6, 6))
+            sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
+            plt.title("Confusion Matrix")
+            plt.ylabel("True label")
+            plt.xlabel("Predicted label")
+            cm_path = PLOTS_DIR / f"{model_name}_cm.png"
+            plt.savefig(cm_path)
+            plt.close()
+
+            # Log classification report
+            report = classification_report(y_val, y_pred, target_names=["Sell", "Buy"])
+            logger.info(f"Classification Report:\n{report}")
 
             logger.info("Training completed successfully")
             return True
 
         except Exception as e:
-            logger.error(f"Error during training: {e}")
+            logger.error(f"Error during training: {e}", exc_info=True)
             return False
 
     def predict(self, use_realtime: bool = True) -> Optional[Dict]:

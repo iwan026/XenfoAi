@@ -42,40 +42,33 @@ ADMIN_IDS = [1198920849]
 class ModelConfig:
     # Training
     SEQUENCE_LENGTH = 60
-    BATCH_SIZE = 64
-    EPOCHS = 100
+    BATCH_SIZE = 32
+    EPOCHS = 50
     VALIDATION_SPLIT = 0.2
     LEARNING_RATE = 0.001
-    PATIENCE = 10
+    PATIENCE = 7
+    L2_REG = 0.001
+    DROPOUT_RATE = 0.3
 
     # Model Architecture
-    CNN_FILTERS = [16, 32, 64]
-    CNN_KERNEL_SIZES = [(3, 1)] * 3
-    CNN_POOL_SIZES = [(2, 1)] * 3
+    CNN_FILTERS = [16, 32]
+    CNN_KERNEL_SIZES = [(3, 1), (3, 1)]
+    CNN_POOL_SIZES = [(2, 1), (2, 1)]
     LSTM_UNITS = 32
-    DROPOUT_RATE = 0.2
 
     # Feature Engineering
     TECHNICAL_INDICATORS = [
         "rsi_14",
         "macd",
-        "macd_signal",
-        "macd_hist",
         "bb_upper",
-        "bb_middle",
         "bb_lower",
-        "sma_20",
-        "sma_50",
         "ema_9",
         "ema_21",
         "atr_14",
         "adx_14",
-        "cci_20",
-        "stoch_k",
-        "stoch_d",
     ]
 
     PRICE_FEATURES = ["open", "high", "low", "close", "volume"]
 
     # Target threshold (0.1% change)
-    TARGET_THRESHOLD = 0.001
+    TARGET_THRESHOLD = 0.002
