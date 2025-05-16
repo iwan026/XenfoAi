@@ -52,34 +52,51 @@ class HybridForexModel:
             # Deep Learning model (CNN + LSTM + Transformer)
             # Input layers
             technical_input = layers.Input(
-                shape=(self.config.SEQUENCE_LENGTH, len(self.config.TECHNICAL_FEATURES))
+                shape=(
+                    self.config.SEQUENCE_LENGTH,
+                    len(self.config.TECHNICAL_FEATURES),
+                ),
+                name="technical_input",
             )
+
             price_input = layers.Input(
-                shape=(self.config.SEQUENCE_LENGTH, len(self.config.PRICE_FEATURES), 1)
+                shape=(self.config.SEQUENCE_LENGTH, len(self.config.PRICE_FEATURES), 1),
+                name="price_input",
             )
 
             # CNN branch
             cnn = price_input
-            for filters, kernel_size, pool_size in zip(
-                self.config.CNN_FILTERS,
-                self.config.CNN_KERNEL_SIZES,
-                self.config.CNN_POOL_SIZES,
+            for i, (filters, kernel_size, pool_size) in enumerate(
+                zip(
+                    self.config.CNN_FILTERS,
+                    self.config.CNN_KERNEL_SIZES,
+                    self.config.CNN_POOL_SIZES,
+                )
             ):
                 cnn = layers.Conv2D(
-                    filters, kernel_size, activation="relu", padding="same"
+                    filters,
+                    kernel_size,
+                    activation="relu",
+                    padding="same",
+                    name=f"conv2d_{i}",
                 )(cnn)
-                cnn = layers.MaxPooling2D(pool_size)(cnn)
-                cnn = layers.BatchNormalization()(cnn)
+                cnn = layers.MaxPooling2D(pool_size, name=f"maxpool_{i}")(cnn)
+                cnn = layers.BatchNormalization(name=f"batchnorm_{i}")(cnn)
 
-            cnn = layers.Flatten()(cnn)
-            cnn = layers.Dense(64, activation="relu")(cnn)
-            cnn = layers.Dropout(self.config.CNN_DROPOUT)(cnn)
+            cnn = layers.Flatten(name="flatten")(cnn)
+            cnn = layers.Dense(64, activation="relu", name="cnn_dense")(cnn)
+            cnn = layers.Dropout(self.config.CNN_DROPOUT, name="cnn_dropout")(cnn)
 
             # LSTM branch
             lstm = technical_input
-            for units in self.config.LSTM_UNITS:
+            for i, units in enumerate(self.config.LSTM_UNITS):
                 lstm = layers.LSTM(
-                    units, return_sequences=True, dropout=self.config.LSTM_DROPOUT
+                    units,
+                    return_sequences=True
+                    if i < len(self.config.LSTM_UNITS) - 1
+                    else False,
+                    dropout=self.config.LSTM_DROPOUT,
+                    name=f"lstm_{i}",
                 )(lstm)
 
             # Transformer branch
@@ -90,18 +107,24 @@ class HybridForexModel:
                 self.config.TRANSFORMER_DROPOUT,
             )
 
-            transformer = transformer_block(lstm)
-            transformer = layers.GlobalAveragePooling1D()(transformer)
+            transformer = transformer_block(technical_input)
+            transformer = layers.GlobalAveragePooling1D(name="transformer_pool")(
+                transformer
+            )
 
             # Combine all branches
-            combined = layers.concatenate([cnn, transformer])
-            combined = layers.Dense(32, activation="relu")(combined)
-            combined = layers.Dropout(0.2)(combined)
-            output = layers.Dense(1, activation="sigmoid")(combined)
+            combined = layers.concatenate([cnn, lstm, transformer], name="concatenate")
+            combined = layers.Dense(32, activation="relu", name="combined_dense")(
+                combined
+            )
+            combined = layers.Dropout(0.2, name="combined_dropout")(combined)
+            output = layers.Dense(1, activation="sigmoid", name="output")(combined)
 
             # Create model
             self.deep_model = Model(
-                inputs=[technical_input, price_input], outputs=output
+                inputs=[technical_input, price_input],
+                outputs=output,
+                name="hybrid_forex_model",
             )
 
             # Compile model
@@ -117,40 +140,48 @@ class HybridForexModel:
     def train(self, train_data: Dict, validation_data: Optional[Dict] = None):
         """Training model hybrid"""
         try:
-            # Train XGBoost
+            # Training XGBoost
             print("Training XGBoost model...")
-            self.xgb_model.fit(
-                train_data["technical_features"].reshape(
-                    train_data["technical_features"].shape[0], -1
-                ),
-                train_data["target"],
-                eval_set=[
-                    (
-                        validation_data["technical_features"].reshape(
-                            validation_data["technical_features"].shape[0], -1
-                        ),
-                        validation_data["target"],
-                    )
+            technical_features_reshaped = train_data["technical_features"].reshape(
+                train_data["technical_features"].shape[0], -1
+            )
+
+            if validation_data:
+                val_technical_features_reshaped = validation_data[
+                    "technical_features"
+                ].reshape(validation_data["technical_features"].shape[0], -1)
+                eval_set = [
+                    (val_technical_features_reshaped, validation_data["target"])
                 ]
-                if validation_data
-                else None,
+            else:
+                eval_set = None
+
+            self.xgb_model.fit(
+                technical_features_reshaped,
+                train_data["target"],
+                eval_set=eval_set,
                 verbose=True,
             )
 
             # Clear memory
             gc.collect()
 
-            # Train Deep Learning model
+            # Training Deep Learning model
             print("Training Deep Learning model...")
             callbacks = [
                 tf.keras.callbacks.EarlyStopping(
-                    monitor="val_loss", patience=self.config.PATIENCE
+                    monitor="val_loss" if validation_data else "loss",
+                    patience=self.config.PATIENCE,
                 ),
                 tf.keras.callbacks.ReduceLROnPlateau(
-                    monitor="val_loss", factor=0.5, patience=3
+                    monitor="val_loss" if validation_data else "loss",
+                    factor=0.5,
+                    patience=3,
                 ),
                 tf.keras.callbacks.ModelCheckpoint(
-                    "best_model.h5", monitor="val_loss", save_best_only=True
+                    "best_model.h5",
+                    monitor="val_loss" if validation_data else "loss",
+                    save_best_only=True,
                 ),
             ]
 
@@ -169,6 +200,7 @@ class HybridForexModel:
                 if validation_data
                 else None,
                 callbacks=callbacks,
+                verbose=1,
             )
 
             return history
@@ -190,6 +222,7 @@ class HybridForexModel:
             deep_pred = self.deep_model.predict(
                 [data["technical_features"], data["price_features_cnn"]],
                 batch_size=self.config.BATCH_SIZE,
+                verbose=0,
             ).flatten()
 
             # Combine predictions (simple average)
@@ -199,23 +232,3 @@ class HybridForexModel:
 
         except Exception as e:
             raise Exception(f"Error dalam pembuatan prediksi: {str(e)}")
-
-    def save_models(self, xgb_path: str, deep_path: str):
-        """Menyimpan model"""
-        try:
-            self.xgb_model.save_model(xgb_path)
-            self.deep_model.save(deep_path)
-
-        except Exception as e:
-            raise Exception(f"Error dalam penyimpanan model: {str(e)}")
-
-    def load_models(self, xgb_path: str, deep_path: str):
-        """Memuat model yang telah disimpan"""
-        try:
-            self.xgb_model.load_model(xgb_path)
-            self.deep_model = tf.keras.models.load_model(
-                deep_path, custom_objects={"TransformerBlock": TransformerBlock}
-            )
-
-        except Exception as e:
-            raise Exception(f"Error dalam pemuatan model: {str(e)}")
