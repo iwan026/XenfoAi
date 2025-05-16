@@ -286,6 +286,9 @@ class ForexModel:
     def _calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Hitung indikator teknikal"""
         try:
+            logger.info("Starting technical indicators calculation...")
+            df = df.copy()  # Create copy to avoid modifying original
+
             # RSI
             df["rsi_14"] = self._calculate_rsi(df["close"], period=14)
 
@@ -319,9 +322,18 @@ class ForexModel:
             # Stochastic
             df["stoch_k"], df["stoch_d"] = self._calculate_stochastic(df)
 
-            # Drop NaN values
-            df.dropna(inplace=True)
+            # Handle missing values
+            df = df.replace([np.inf, -np.inf], np.nan)
+            df = df.fillna(method="ffill").fillna(method="bfill")
 
+            # Validate results
+            for col in df.columns:
+                if df[col].isna().any():
+                    logger.warning(
+                        f"Column {col} contains NaN values after calculation"
+                    )
+
+            logger.info("Technical indicators calculation completed")
             return df
 
         except Exception as e:
@@ -389,40 +401,111 @@ class ForexModel:
             0.015 * mean_dev
         )
 
-    def _calculate_stochastic(self, df: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
+    def _calculate_stochastic(
+        self, df: pd.DataFrame, k_period: int = 14, d_period: int = 3
+    ) -> Tuple[pd.Series, pd.Series]:
         """Hitung Stochastic Oscillator"""
-        low_min = df["low"].rolling(window=14).min()
-        high_max = df["high"].rolling(window=14).max()
+        try:
+            # Pastikan df memiliki kolom yang diperlukan
+            required_columns = ["high", "low", "close"]
+            if not all(col in df.columns for col in required_columns):
+                raise ValueError(
+                    "DataFrame harus memiliki kolom 'high', 'low', dan 'close'"
+                )
 
-        k = 100 * (df["close"] - low_min) / (high_max - low_min)
-        d = k.rolling(window=3).mean()
-        return k, d
+            # Hitung %K
+            low_min = df["low"].rolling(window=k_period).min()
+            high_max = df["high"].rolling(window=k_period).max()
+
+            # Hindari pembagian dengan nol
+            denominator = high_max - low_min
+            denominator = denominator.replace(0, np.nan)
+
+            k = 100 * ((df["close"] - low_min) / denominator)
+
+            # Hitung %D (SMA dari %K)
+            d = k.rolling(window=d_period).mean()
+
+            # Handle NaN values
+            k = k.fillna(50)  # nilai tengah untuk data yang tidak valid
+            d = d.fillna(50)  # nilai tengah untuk data yang tidak valid
+
+            return k, d
+
+        except Exception as e:
+            logger.error(f"Error calculating Stochastic: {e}")
+            # Return default values jika terjadi error
+            return pd.Series(50, index=df.index), pd.Series(50, index=df.index)
 
     def _prepare_data(self, df: pd.DataFrame, is_training: bool = True) -> Dict:
         """Prepare data untuk model"""
         try:
-            # Calculate features
+            logger.info("Starting data preparation...")
+
+            # Validasi input DataFrame
+            if df is None or df.empty:
+                raise ValueError("DataFrame is empty or None")
+
+            required_columns = ["open", "high", "low", "close", "volume"]
+            if not all(col in df.columns for col in required_columns):
+                raise ValueError(
+                    f"Missing required columns. Required: {required_columns}"
+                )
+
+            # Calculate features dengan error handling
+            logger.info("Calculating technical indicators...")
             df = self._calculate_technical_indicators(df)
 
-            # Create sequences
+            # Validasi hasil technical indicators
+            if df is None or df.empty:
+                raise ValueError("DataFrame became empty after calculating indicators")
+
+            # Remove infinite values
+            df = df.replace([np.inf, -np.inf], np.nan)
+
+            # Handle missing values
+            df = df.fillna(method="ffill").fillna(method="bfill")
+
+            # Create sequences dengan validasi
+            logger.info("Creating sequences...")
             sequences = []
             targets = []
+
+            if len(df) <= self.config.SEQUENCE_LENGTH:
+                raise ValueError(
+                    f"Not enough data points. Need at least {self.config.SEQUENCE_LENGTH + 1}"
+                )
 
             for i in range(len(df) - self.config.SEQUENCE_LENGTH):
                 sequence = df.iloc[i : i + self.config.SEQUENCE_LENGTH]
 
                 if is_training:
-                    target = (
-                        1
-                        if df["close"].iloc[i + self.config.SEQUENCE_LENGTH]
-                        > df["close"].iloc[i + self.config.SEQUENCE_LENGTH - 1]
-                        else 0
-                    )
-                    targets.append(target)
+                    if i + self.config.SEQUENCE_LENGTH < len(df):
+                        target = (
+                            1
+                            if df["close"].iloc[i + self.config.SEQUENCE_LENGTH]
+                            > df["close"].iloc[i + self.config.SEQUENCE_LENGTH - 1]
+                            else 0
+                        )
+                        targets.append(target)
 
                 sequences.append(sequence)
 
-            # Prepare features
+            logger.info(f"Created {len(sequences)} sequences")
+
+            # Prepare features dengan validasi
+            logger.info("Preparing feature arrays...")
+
+            if not sequences:
+                raise ValueError("No sequences created")
+
+            # Validate technical features exist
+            missing_features = [
+                f for f in self.config.TECHNICAL_FEATURES if f not in df.columns
+            ]
+            if missing_features:
+                raise ValueError(f"Missing technical features: {missing_features}")
+
             technical_features = np.array(
                 [
                     sequence[self.config.TECHNICAL_FEATURES].values
@@ -449,8 +532,16 @@ class ForexModel:
             }
 
             if is_training:
+                if not targets:
+                    raise ValueError("No targets created for training data")
                 data["target"] = np.array(targets)
 
+            # Validate final data
+            for key, value in data.items():
+                if value is None or (isinstance(value, np.ndarray) and value.size == 0):
+                    raise ValueError(f"Empty or None array for {key}")
+
+            logger.info("Data preparation completed successfully")
             return data
 
         except Exception as e:
