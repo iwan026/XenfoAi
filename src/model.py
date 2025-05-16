@@ -16,6 +16,7 @@ from config import (
     MT5_PASSWORD,
     MT5_SERVER,
     MODELS_DIR,
+    DATASETS_DIR,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,9 +93,11 @@ class ForexModel:
         self.xgb_model = None
         self.deep_model = None
 
-        # Setup model directory
+        # Setup model and dataset directories
         self.model_dir = MODELS_DIR / self.symbol
+        self.dataset_dir = DATASETS_DIR / self.symbol
         self.model_dir.mkdir(parents=True, exist_ok=True)
+        self.dataset_dir.mkdir(parents=True, exist_ok=True)
 
         # Load or create models
         self._load_or_create_models()
@@ -106,6 +109,10 @@ class ForexModel:
         xgb_path = self.model_dir / f"{self.symbol}_{self.timeframe}_xgb.json"
         deep_path = self.model_dir / f"{self.symbol}_{self.timeframe}_deep.keras"
         return xgb_path, deep_path
+
+    def _get_dataset_path(self) -> Path:
+        """Get path for CSV dataset file"""
+        return self.dataset_dir / f"{self.symbol}_{self.timeframe}.csv"
 
     def _initialize_mt5(self) -> bool:
         """Initialize MT5 connection"""
@@ -446,13 +453,70 @@ class ForexModel:
         finally:
             mt5.shutdown()
 
+    def _load_csv_data(self) -> pd.DataFrame:
+        """Load data from CSV file in datasets directory"""
+        try:
+            csv_path = self._get_dataset_path()
+            logger.info(f"Loading data from {csv_path}")
+
+            if not csv_path.exists():
+                raise FileNotFoundError(f"Dataset file not found: {csv_path}")
+
+            # Load the CSV file
+            df = pd.read_csv(csv_path)
+
+            # Ensure we have 'time' column and convert to datetime
+            if "time" in df.columns:
+                df["time"] = pd.to_datetime(df["time"])
+                df.set_index("time", inplace=True)
+            else:
+                # If there's no time column, check if there's a datetime column
+                datetime_cols = [
+                    col
+                    for col in df.columns
+                    if "date" in col.lower() or "time" in col.lower()
+                ]
+                if datetime_cols:
+                    df[datetime_cols[0]] = pd.to_datetime(df[datetime_cols[0]])
+                    df.set_index(datetime_cols[0], inplace=True)
+                else:
+                    # If no obvious datetime column, create a simple index
+                    logger.warning(
+                        "No datetime column found, creating sequential index"
+                    )
+                    df.index = pd.date_range(start="2000-01-01", periods=len(df))
+
+            # Ensure all required columns exist
+            required_columns = self.config.PRICE_FEATURES
+            missing_columns = [col for col in required_columns if col not in df.columns]
+
+            if missing_columns:
+                raise ValueError(f"Missing required columns in CSV: {missing_columns}")
+
+            # Make sure column names are lowercase
+            df.columns = [col.lower() for col in df.columns]
+
+            # Ensure volume column exists (some CSVs might have 'volume' or 'tick_volume')
+            if "volume" not in df.columns and "tick_volume" in df.columns:
+                df["volume"] = df["tick_volume"]
+            elif "volume" not in df.columns:
+                # If no volume data, create dummy volume data
+                logger.warning("No volume data found, creating dummy volume data")
+                df["volume"] = 1
+
+            return df
+
+        except Exception as e:
+            logger.error(f"Error loading CSV data: {e}")
+            raise
+
     def train(self) -> bool:
-        """Train the model"""
+        """Train the model using CSV data"""
         try:
             logger.info(f"Starting training for {self.symbol} {self.timeframe}")
 
-            # Get training data
-            df = self._get_historical_data(5000)  # Get enough data for training
+            # Get training data from CSV instead of MT5
+            df = self._load_csv_data()
             data = self._prepare_data(df, is_training=True)
 
             # Split data
