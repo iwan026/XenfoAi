@@ -24,6 +24,54 @@ logger = logging.getLogger(__name__)
 class TransformerBlock(tf.keras.layers.Layer):
     """Transformer block untuk sequence processing"""
 
+    def __init__(self, key_dim, num_heads, ff_dim, rate=0.1):
+        super(TransformerBlock, self).__init__()
+        self.key_dim = key_dim
+
+        # Multi-head attention layer
+        self.att = tf.keras.layers.MultiHeadAttention(
+            num_heads=num_heads, key_dim=key_dim
+        )
+
+        # Feed forward network
+        self.ffn = tf.keras.Sequential(
+            [
+                tf.keras.layers.Dense(ff_dim, activation="relu"),
+                tf.keras.layers.Dense(key_dim),  # Output dim harus sama dengan key_dim
+            ]
+        )
+
+        # Layer normalization dan dropout
+        self.layernorm1 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+        self.layernorm2 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+        self.dropout1 = tf.keras.layers.Dropout(rate)
+        self.dropout2 = tf.keras.layers.Dropout(rate)
+
+    def call(self, inputs, training=False):
+        # Multi-head attention
+        attn_output = self.att(inputs, inputs)
+        attn_output = self.dropout1(attn_output, training=training)
+        out1 = self.layernorm1(inputs + attn_output)
+
+        # Feed forward network
+        ffn_output = self.ffn(out1)
+        ffn_output = self.dropout2(ffn_output, training=training)
+        return self.layernorm2(out1 + ffn_output)
+
+    def get_config(self):
+        config = super(TransformerBlock, self).get_config()
+        config.update(
+            {
+                "key_dim": self.key_dim,
+                "num_heads": self.att.num_heads,
+                "ff_dim": self.ffn.layers[0].units,
+                "rate": self.dropout1.rate,
+            }
+        )
+        return config
+
+
+class ForexModel:
     def __init__(self, symbol: str, timeframe: str):
         """Inisialisasi model forex"""
         self.symbol = symbol.upper()
@@ -45,65 +93,6 @@ class TransformerBlock(tf.keras.layers.Layer):
                 f"Data file not found: {data_file}\n"
                 f"Please ensure the file exists in the datasets folder"
             )
-
-        # Load atau buat model baru
-        self._load_or_create_models()
-
-    def build(self, input_shape):
-        """Build layer dengan input shape yang diberikan"""
-        super(TransformerBlock, self).build(input_shape)
-
-    def call(self, inputs, training=False):
-        """Forward pass"""
-        # Project input ke dimensi yang sesuai jika perlu
-        if inputs.shape[-1] != self.embed_dim:
-            inputs = tf.keras.layers.Dense(self.embed_dim)(inputs)
-
-        # Multi-head attention
-        attn_output = self.att(inputs, inputs)
-        attn_output = self.dropout1(attn_output, training=training)
-        out1 = self.layernorm1(inputs + attn_output)
-
-        # Feed forward network
-        ffn_output = self.ffn(out1)
-        ffn_output = self.dropout2(ffn_output, training=training)
-        return self.layernorm2(out1 + ffn_output)
-
-    def compute_output_shape(self, input_shape):
-        """Compute output shape"""
-        return input_shape[0], input_shape[1], self.embed_dim
-
-    def get_config(self):
-        """Get layer config"""
-        config = super(TransformerBlock, self).get_config()
-        config.update(
-            {
-                "embed_dim": self.embed_dim,
-                "num_heads": self.att.num_heads,
-                "ff_dim": self.ffn.layers[0].units,
-                "rate": self.dropout1.rate,
-            }
-        )
-        return config
-
-
-class ForexModel:
-    def __init__(self, symbol: str, timeframe: str):
-        """Inisialisasi model forex"""
-        self.symbol = symbol.upper()
-        self.timeframe = timeframe.upper()
-        self.config = ModelConfig()
-
-        # Inisialisasi model
-        self.xgb_model = None
-        self.deep_model = None
-
-        # Setup paths
-        self.model_dir = MODELS_DIR / self.symbol
-        self.model_dir.mkdir(parents=True, exist_ok=True)
-
-        # Inisialisasi MT5
-        self._initialize_mt5()
 
         # Load atau buat model baru
         self._load_or_create_models()
@@ -206,9 +195,9 @@ class ForexModel:
 
             # Transformer branch dengan parameter yang disesuaikan
             transformer_block = TransformerBlock(
-                embed_dim=embed_dim,  # Sesuaikan dengan input dimension
-                num_heads=4,  # Pastikan embed_dim bisa dibagi num_heads
-                ff_dim=embed_dim * 4,  # Biasanya 4x embed_dim
+                key_dim=16,  # Sesuaikan dengan dimensi input
+                num_heads=4,  # Pastikan key_dim bisa dibagi num_heads
+                ff_dim=64,  # Biasanya 4x key_dim
                 rate=self.config.TRANSFORMER_DROPOUT,
             )
 
