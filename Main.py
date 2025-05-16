@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from bot import TelegramBot
+from src.bot import TelegramBot
 from config import BASE_DIR
 
 
