@@ -1,634 +1,355 @@
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-import xgboost as xgb
-import MetaTrader5 as mt5
-from datetime import datetime
+from tensorflow.keras import layers, models, optimizers, callbacks
+from sklearn.model_selection import train_test_split
+from sklearn.utils.class_weight import compute_class_weight
+import matplotlib.pyplot as plt
 import logging
 from pathlib import Path
-import gc
+from datetime import datetime
 from typing import Dict, Optional, Tuple
 
-from config import (
-    ModelConfig,
-    TIMEFRAMES,
-    MT5_LOGIN,
-    MT5_PASSWORD,
-    MT5_SERVER,
-    MODELS_DIR,
-    DATASETS_DIR,
-)
+from config import ModelConfig, MODELS_DIR, DATASETS_DIR, LOGS_DIR, PLOTS_DIR
 
 logger = logging.getLogger(__name__)
 
 
-class TransformerBlock(tf.keras.layers.Layer):
-    """Transformer block untuk sequence processing"""
-
-    def __init__(self, embed_dim: int, num_heads: int, ff_dim: int, rate: float = 0.1):
-        super(TransformerBlock, self).__init__()
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.ff_dim = ff_dim
-        self.rate = rate
-
-        # Multi-head attention dengan dimensi yang konsisten
-        self.att = tf.keras.layers.MultiHeadAttention(
-            num_heads=num_heads,
-            key_dim=embed_dim // num_heads,  # Pastikan key_dim sesuai dengan num_heads
-            value_dim=embed_dim // num_heads,  # Tambahkan value_dim yang sesuai
-        )
-
-        # Feed forward network dengan dimensi yang konsisten
-        self.ffn = tf.keras.Sequential(
-            [
-                tf.keras.layers.Dense(ff_dim, activation="relu"),
-                tf.keras.layers.Dense(
-                    embed_dim
-                ),  # Output dim harus sama dengan input (embed_dim)
-            ]
-        )
-
-        # Layer normalization dan dropout
-        self.layernorm1 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
-        self.layernorm2 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
-        self.dropout1 = tf.keras.layers.Dropout(rate)
-        self.dropout2 = tf.keras.layers.Dropout(rate)
-
-    def call(self, inputs, training=False):
-        # Multi-head attention dengan shape yang konsisten
-        attn_output = self.att(inputs, inputs, inputs)
-        attn_output = self.dropout1(attn_output, training=training)
-        out1 = self.layernorm1(inputs + attn_output)
-
-        # Feed forward network dengan shape yang konsisten
-        ffn_output = self.ffn(out1)
-        ffn_output = self.dropout2(ffn_output, training=training)
-        return self.layernorm2(out1 + ffn_output)
-
-    def compute_output_shape(self, input_shape):
-        return input_shape
-
-    def get_config(self):
-        config = super(TransformerBlock, self).get_config()
-        config.update(
-            {
-                "embed_dim": self.embed_dim,
-                "num_heads": self.num_heads,
-                "ff_dim": self.ff_dim,
-                "rate": self.rate,
-            }
-        )
-        return config
-
-
 class ForexModel:
     def __init__(self, symbol: str, timeframe: str):
-        """Initialize Forex model"""
+        """Initialize Forex prediction model"""
         self.symbol = symbol.upper()
         self.timeframe = timeframe.upper()
         self.config = ModelConfig()
 
-        # Initialize models
-        self.xgb_model = None
-        self.deep_model = None
-
-        # Setup model and dataset directories
+        # Model and paths
+        self.model = None
         self.model_dir = MODELS_DIR / self.symbol
         self.dataset_dir = DATASETS_DIR / self.symbol
         self.model_dir.mkdir(parents=True, exist_ok=True)
-        self.dataset_dir.mkdir(parents=True, exist_ok=True)
 
-        # Load or create models
-        self._load_or_create_models()
+        # Load or create model
+        self._load_or_create_model()
 
         logger.info(f"Initialized ForexModel for {self.symbol} {self.timeframe}")
 
-    def _get_model_paths(self) -> Tuple[Path, Path]:
-        """Get paths for model files"""
-        xgb_path = self.model_dir / f"{self.symbol}_{self.timeframe}_xgb.json"
-        deep_path = self.model_dir / f"{self.symbol}_{self.timeframe}_deep.keras"
-        return xgb_path, deep_path
+    def _get_model_path(self) -> Path:
+        """Get path for model file"""
+        return self.model_dir / f"{self.symbol}_{self.timeframe}_model.keras"
 
     def _get_dataset_path(self) -> Path:
         """Get path for CSV dataset file"""
         return self.dataset_dir / f"{self.symbol}_{self.timeframe}.csv"
 
-    def _initialize_mt5(self) -> bool:
-        """Initialize MT5 connection"""
+    def _build_model(self):
+        """Build CNN-LSTM model architecture"""
+        # Technical features input (for LSTM)
+        tech_input = layers.Input(
+            shape=(self.config.SEQUENCE_LENGTH, len(self.config.TECHNICAL_INDICATORS)),
+            name="technical_input",
+        )
+
+        # Price features input (for CNN)
+        price_input = layers.Input(
+            shape=(self.config.SEQUENCE_LENGTH, len(self.config.PRICE_FEATURES), 1),
+            name="price_input",
+        )
+
+        # CNN Branch
+        cnn = price_input
+        for filters, kernel_size, pool_size in zip(
+            self.config.CNN_FILTERS,
+            self.config.CNN_KERNEL_SIZES,
+            self.config.CNN_POOL_SIZES,
+        ):
+            cnn = layers.Conv2D(
+                filters, kernel_size, activation="relu", padding="same"
+            )(cnn)
+            cnn = layers.MaxPooling2D(pool_size)(cnn)
+            cnn = layers.BatchNormalization()(cnn)
+
+        cnn = layers.Flatten()(cnn)
+        cnn = layers.Dropout(self.config.DROPOUT_RATE)(cnn)
+
+        # LSTM Branch
+        lstm = layers.LSTM(self.config.LSTM_UNITS, dropout=self.config.DROPOUT_RATE)(
+            tech_input
+        )
+
+        # Combine branches
+        combined = layers.concatenate([cnn, lstm])
+        output = layers.Dense(1, activation="sigmoid")(combined)
+
+        # Create model
+        model = models.Model(inputs=[tech_input, price_input], outputs=output)
+
+        model.compile(
+            optimizer=optimizers.Adam(self.config.LEARNING_RATE),
+            loss="binary_crossentropy",
+            metrics=["accuracy"],
+        )
+
+        return model
+
+    def _load_or_create_model(self):
+        """Load existing model or create new one"""
+        model_path = self._get_model_path()
+
         try:
-            if not mt5.initialize():
-                raise Exception(f"MT5 initialization failed: {mt5.last_error()}")
-
-            if not mt5.login(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER):
-                raise Exception(f"MT5 login failed: {mt5.last_error()}")
-
-            logger.info("MT5 connection successful")
-            return True
-
-        except Exception as e:
-            logger.error(f"MT5 initialization error: {e}")
-            return False
-
-    def _load_or_create_models(self):
-        """Load existing models or create new ones"""
-        try:
-            xgb_path, deep_path = self._get_model_paths()
-
-            if xgb_path.exists() and deep_path.exists():
-                logger.info(f"Loading existing models from {self.model_dir}")
-                self._load_models(xgb_path, deep_path)
+            if model_path.exists():
+                logger.info(f"Loading model from {model_path}")
+                self.model = models.load_model(model_path)
             else:
-                logger.info("Creating new models")
-                self._build_models()
+                logger.info("Creating new model")
+                self.model = self._build_model()
+                self.model.summary(print_fn=logger.info)
 
         except Exception as e:
             logger.error(f"Error in model initialization: {e}")
             raise
 
-    def _build_models(self):
-        """Build arsitektur model"""
-        try:
-            # XGBoost model
-            self.xgb_model = xgb.XGBClassifier(
-                max_depth=6,
-                learning_rate=0.01,
-                n_estimators=100,
-                objective="binary:logistic",
-                tree_method="hist",
-                subsample=0.8,
-                colsample_bytree=0.8,
-                eval_metric=["logloss", "auc"],
-                early_stopping_rounds=10,
-            )
-
-            # Calculate input dimensions
-            num_technical_features = len(self.config.TECHNICAL_FEATURES)
-            num_price_features = len(self.config.PRICE_FEATURES)
-
-            # Define embedding dimension yang konsisten
-            embed_dim = 64  # Ubah ke 64 untuk dimensi yang lebih besar
-
-            # Input layers
-            technical_input = tf.keras.layers.Input(
-                shape=(self.config.SEQUENCE_LENGTH, num_technical_features)
-            )
-
-            # Add embedding layer untuk technical features
-            technical_embedding = tf.keras.layers.Dense(embed_dim)(technical_input)
-
-            price_input = tf.keras.layers.Input(
-                shape=(self.config.SEQUENCE_LENGTH, num_price_features, 1)
-            )
-
-            # CNN branch
-            cnn = price_input
-            for filters, kernel_size, pool_size in zip(
-                self.config.CNN_FILTERS,
-                self.config.CNN_KERNEL_SIZES,
-                self.config.CNN_POOL_SIZES,
-            ):
-                cnn = tf.keras.layers.Conv2D(
-                    filters, kernel_size, activation="relu", padding="same"
-                )(cnn)
-                cnn = tf.keras.layers.MaxPooling2D(pool_size)(cnn)
-                cnn = tf.keras.layers.BatchNormalization()(cnn)
-
-            cnn = tf.keras.layers.Flatten()(cnn)
-            cnn = tf.keras.layers.Dense(embed_dim, activation="relu")(cnn)
-            cnn = tf.keras.layers.Dropout(self.config.CNN_DROPOUT)(cnn)
-
-            # LSTM branch
-            lstm = technical_embedding  # Gunakan technical_embedding
-            for i, units in enumerate(self.config.LSTM_UNITS):
-                return_sequences = i < len(self.config.LSTM_UNITS) - 1
-                lstm = tf.keras.layers.LSTM(
-                    units,
-                    return_sequences=return_sequences,
-                    dropout=self.config.LSTM_DROPOUT,
-                )(lstm)
-
-            # Transformer branch
-            transformer_block = TransformerBlock(
-                embed_dim=embed_dim,  # Gunakan embed_dim yang sama
-                num_heads=4,
-                ff_dim=embed_dim * 4,  # FF dim biasanya 4x embed_dim
-                rate=self.config.TRANSFORMER_DROPOUT,
-            )
-
-            transformer = transformer_block(technical_embedding)
-            transformer = tf.keras.layers.GlobalAveragePooling1D()(transformer)
-
-            # Combine all branches dengan dimensi yang konsisten
-            combined = tf.keras.layers.concatenate([cnn, lstm, transformer])
-            combined = tf.keras.layers.Dense(embed_dim, activation="relu")(combined)
-            combined = tf.keras.layers.Dropout(0.2)(combined)
-            output = tf.keras.layers.Dense(1, activation="sigmoid")(combined)
-
-            # Create and compile model
-            self.deep_model = tf.keras.Model(
-                inputs=[technical_input, price_input], outputs=output
-            )
-
-            self.deep_model.compile(
-                optimizer=tf.keras.optimizers.Adam(self.config.LEARNING_RATE),
-                loss="binary_crossentropy",
-                metrics=["accuracy"],
-            )
-
-            logger.info("Models built successfully")
-
-        except Exception as e:
-            logger.error(f"Error building models: {e}")
-            raise
-
-    def _load_models(self, xgb_path: Path, deep_path: Path):
-        """Load saved models"""
-        try:
-            self.xgb_model = xgb.XGBClassifier()
-            self.xgb_model.load_model(str(xgb_path))
-
-            self.deep_model = tf.keras.models.load_model(
-                str(deep_path), custom_objects={"TransformerBlock": TransformerBlock}
-            )
-
-            logger.info("Models loaded successfully")
-
-        except Exception as e:
-            logger.error(f"Error loading models: {e}")
-            raise
-
-    def _save_models(self):
-        """Save models to disk"""
-        try:
-            xgb_path, deep_path = self._get_model_paths()
-
-            # Save XGBoost model
-            self.xgb_model.save_model(str(xgb_path))
-
-            # Save Deep Learning model
-            self.deep_model.save(str(deep_path), save_format="keras")
-
-            logger.info(f"Models saved to {self.model_dir}")
-
-        except Exception as e:
-            logger.error(f"Error saving models: {e}")
-            raise
-
     def _calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate technical indicators"""
-        try:
-            logger.info("Calculating technical indicators...")
-            df = df.copy()
+        """Calculate technical indicators from price data"""
+        df = df.copy()
 
-            # === RSI ===
-            delta = df["close"].diff()
-            gain = np.where(delta > 0, delta, 0)
-            loss = np.where(delta < 0, -delta, 0)
-            avg_gain = pd.Series(gain).rolling(window=14).mean()
-            avg_loss = pd.Series(loss).rolling(window=14).mean()
-            rs = avg_gain / avg_loss
-            df["rsi_14"] = 100 - (100 / (1 + rs))
+        # RSI
+        delta = df["close"].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df["rsi_14"] = 100 - (100 / (1 + rs))
 
-            # === MACD ===
-            exp1 = df["close"].ewm(span=12, adjust=False).mean()
-            exp2 = df["close"].ewm(span=26, adjust=False).mean()
-            df["macd"] = exp1 - exp2
-            df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
-            df["macd_hist"] = df["macd"] - df["macd_signal"]
+        # MACD
+        exp1 = df["close"].ewm(span=12, adjust=False).mean()
+        exp2 = df["close"].ewm(span=26, adjust=False).mean()
+        df["macd"] = exp1 - exp2
+        df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
+        df["macd_hist"] = df["macd"] - df["macd_signal"]
 
-            # === Bollinger Bands ===
-            df["bb_middle"] = df["close"].rolling(window=20).mean()
-            std = df["close"].rolling(window=20).std()
-            df["bb_upper"] = df["bb_middle"] + 2 * std
-            df["bb_lower"] = df["bb_middle"] - 2 * std
+        # Bollinger Bands
+        df["bb_middle"] = df["close"].rolling(window=20).mean()
+        std = df["close"].rolling(window=20).std()
+        df["bb_upper"] = df["bb_middle"] + 2 * std
+        df["bb_lower"] = df["bb_middle"] - 2 * std
 
-            # === Moving Averages ===
-            df["sma_20"] = df["close"].rolling(window=20).mean()
-            df["sma_50"] = df["close"].rolling(window=50).mean()
-            df["ema_9"] = df["close"].ewm(span=9, adjust=False).mean()
-            df["ema_21"] = df["close"].ewm(span=21, adjust=False).mean()
+        # Moving Averages
+        df["sma_20"] = df["close"].rolling(window=20).mean()
+        df["sma_50"] = df["close"].rolling(window=50).mean()
+        df["ema_9"] = df["close"].ewm(span=9, adjust=False).mean()
+        df["ema_21"] = df["close"].ewm(span=21, adjust=False).mean()
 
-            # === ATR ===
-            high_low = df["high"] - df["low"]
-            high_close = np.abs(df["high"] - df["close"].shift())
-            low_close = np.abs(df["low"] - df["close"].shift())
-            tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-            df["atr_14"] = tr.rolling(window=14).mean()
+        # ATR
+        high_low = df["high"] - df["low"]
+        high_close = np.abs(df["high"] - df["close"].shift())
+        low_close = np.abs(df["low"] - df["close"].shift())
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df["atr_14"] = tr.rolling(window=14).mean()
 
-            # === ADX ===
-            plus_dm = df["high"].diff()
-            minus_dm = df["low"].diff()
-            plus_dm[plus_dm < 0] = 0
-            minus_dm[minus_dm > 0] = 0
-            atr = df["atr_14"]
-            plus_di = 100 * (plus_dm.rolling(window=14).mean() / atr)
-            minus_di = 100 * (abs(minus_dm.rolling(window=14).mean()) / atr)
-            dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
-            df["adx_14"] = dx.rolling(window=14).mean()
+        # ADX
+        plus_dm = df["high"].diff()
+        minus_dm = -df["low"].diff()
+        plus_dm[plus_dm < 0] = 0
+        minus_dm[minus_dm < 0] = 0
+        tr = df["high"] - df["low"]
+        plus_di = 100 * (plus_dm.ewm(alpha=1 / 14).mean() / tr.ewm(alpha=1 / 14).mean())
+        minus_di = 100 * (
+            minus_dm.ewm(alpha=1 / 14).mean() / tr.ewm(alpha=1 / 14).mean()
+        )
+        dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
+        df["adx_14"] = dx.ewm(alpha=1 / 14).mean()
 
-            # === CCI ===
-            typical_price = (df["high"] + df["low"] + df["close"]) / 3
-            ma_typical = typical_price.rolling(window=20).mean()
-            mad_typical = typical_price.rolling(window=20).apply(
-                lambda x: np.mean(np.abs(x - np.mean(x))), raw=True
-            )
-            df["cci_20"] = (typical_price - ma_typical) / (0.015 * mad_typical)
+        # CCI
+        tp = (df["high"] + df["low"] + df["close"]) / 3
+        df["cci_20"] = (tp - tp.rolling(window=20).mean()) / (
+            0.015 * tp.rolling(window=20).std()
+        )
 
-            # === Stochastic ===
-            low_min = df["low"].rolling(window=14).min()
-            high_max = df["high"].rolling(window=14).max()
-            df["stoch_k"] = 100 * (df["close"] - low_min) / (high_max - low_min)
-            df["stoch_d"] = df["stoch_k"].rolling(window=3).mean()
+        # Stochastic
+        low_min = df["low"].rolling(window=14).min()
+        high_max = df["high"].rolling(window=14).max()
+        df["stoch_k"] = 100 * (df["close"] - low_min) / (high_max - low_min)
+        df["stoch_d"] = df["stoch_k"].rolling(window=3).mean()
 
-            # === Clean up NaN/Inf ===
-            df = df.replace([np.inf, -np.inf], np.nan)
-            df = df.fillna(method="ffill").fillna(method="bfill")
+        # Clean NaN values
+        df = df.fillna(method="ffill").fillna(method="bfill")
 
-            return df
+        return df
 
-        except Exception as e:
-            logger.error(f"Error calculating technical indicators: {e}")
-            raise
+    def _prepare_data(
+        self, df: pd.DataFrame
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Prepare data for training/prediction"""
+        # Calculate indicators
+        df = self._calculate_technical_indicators(df)
 
-    def _prepare_data(self, df: pd.DataFrame, is_training: bool = True) -> Dict:
-        """Prepare data for model"""
-        try:
-            logger.info("Preparing data...")
+        # Create sequences
+        sequences = []
+        targets = []
 
-            # Calculate technical indicators
-            df = self._calculate_technical_indicators(df)
+        for i in range(len(df) - self.config.SEQUENCE_LENGTH - 1):
+            seq = df.iloc[i : i + self.config.SEQUENCE_LENGTH]
+            next_close = df["close"].iloc[i + self.config.SEQUENCE_LENGTH]
+            current_close = df["close"].iloc[i + self.config.SEQUENCE_LENGTH - 1]
 
-            # Create sequences
-            sequences = []
-            targets = []
+            # Calculate price change percentage
+            price_change = (next_close - current_close) / current_close
 
-            for i in range(len(df) - self.config.SEQUENCE_LENGTH):
-                sequence = df.iloc[i : i + self.config.SEQUENCE_LENGTH]
+            # Create binary target
+            target = 1 if price_change > self.config.TARGET_THRESHOLD else 0
+            targets.append(target)
 
-                if is_training and i + self.config.SEQUENCE_LENGTH < len(df):
-                    target = (
-                        1
-                        if df["close"].iloc[i + self.config.SEQUENCE_LENGTH]
-                        > df["close"].iloc[i + self.config.SEQUENCE_LENGTH - 1]
-                        else 0
-                    )
-                    targets.append(target)
+            sequences.append(seq)
 
-                sequences.append(sequence)
+        # Prepare feature arrays
+        tech_features = np.array(
+            [seq[self.config.TECHNICAL_INDICATORS].values for seq in sequences]
+        )
 
-            # Prepare feature arrays
-            technical_features = np.array(
-                [
-                    sequence[self.config.TECHNICAL_FEATURES].values
-                    for sequence in sequences
-                ]
-            )
+        price_features = np.array(
+            [seq[self.config.PRICE_FEATURES].values for seq in sequences]
+        ).reshape(-1, self.config.SEQUENCE_LENGTH, len(self.config.PRICE_FEATURES), 1)
 
-            price_features = np.array(
-                [sequence[self.config.PRICE_FEATURES].values for sequence in sequences]
-            )
+        targets = np.array(targets)
 
-            # Reshape price features for CNN
-            price_features_cnn = price_features.reshape(
-                price_features.shape[0],
-                price_features.shape[1],
-                price_features.shape[2],
-                1,
-            )
+        return tech_features, price_features, targets
 
-            data = {
-                "technical_features": technical_features,
-                "price_features_cnn": price_features_cnn,
-            }
+    def _load_dataset(self) -> pd.DataFrame:
+        """Load dataset from CSV file"""
+        csv_path = self._get_dataset_path()
+        logger.info(f"Loading dataset from {csv_path}")
 
-            if is_training:
-                data["target"] = np.array(targets)
+        df = pd.read_csv(csv_path, parse_dates=["time"], index_col="time")
 
-            return data
+        # Ensure required columns exist
+        required_cols = ["open", "high", "low", "close", "volume"]
+        missing_cols = [col for col in required_cols if col not in df.columns]
 
-        except Exception as e:
-            logger.error(f"Error preparing data: {e}")
-            raise
+        if missing_cols:
+            raise ValueError(f"Missing required columns: {missing_cols}")
 
-    def _get_mt5_timeframe(self) -> int:
-        """Convert timeframe string to MT5 timeframe"""
-        return getattr(mt5, TIMEFRAMES[self.timeframe])
+        return df
 
-    def _get_historical_data(self, num_candles: Optional[int] = None) -> pd.DataFrame:
-        """Get historical data from MT5"""
-        try:
-            if not self._initialize_mt5():
-                raise Exception("Failed to initialize MT5")
+    def _plot_training_history(self, history, model_name: str):
+        """Plot training history and save to file"""
+        plt.figure(figsize=(12, 6))
 
-            # Get data from MT5
-            rates = mt5.copy_rates_from_pos(
-                self.symbol,
-                self._get_mt5_timeframe(),
-                0,
-                num_candles or self.config.SEQUENCE_LENGTH * 2,
-            )
+        # Plot loss
+        plt.subplot(1, 2, 1)
+        plt.plot(history.history["loss"], label="Train Loss")
+        plt.plot(history.history["val_loss"], label="Val Loss")
+        plt.title("Model Loss")
+        plt.ylabel("Loss")
+        plt.xlabel("Epoch")
+        plt.legend()
 
-            if rates is None or len(rates) == 0:
-                raise Exception("No data received from MT5")
+        # Plot accuracy
+        plt.subplot(1, 2, 2)
+        plt.plot(history.history["accuracy"], label="Train Accuracy")
+        plt.plot(history.history["val_accuracy"], label="Val Accuracy")
+        plt.title("Model Accuracy")
+        plt.ylabel("Accuracy")
+        plt.xlabel("Epoch")
+        plt.legend()
 
-            # Convert to DataFrame
-            df = pd.DataFrame(rates)
-            df["time"] = pd.to_datetime(df["time"], unit="s")
-            df.set_index("time", inplace=True)
+        # Save plot
+        plot_path = PLOTS_DIR / f"{model_name}_training.png"
+        plt.tight_layout()
+        plt.savefig(plot_path)
+        plt.close()
 
-            # Rename columns if needed
-            if "tick_volume" in df.columns:
-                df["volume"] = df["tick_volume"]
-
-            return df
-
-        except Exception as e:
-            logger.error(f"Error getting historical data: {e}")
-            raise
-        finally:
-            mt5.shutdown()
-
-    def _load_csv_data(self) -> pd.DataFrame:
-        """Load data from CSV file in datasets directory"""
-        try:
-            csv_path = self._get_dataset_path()
-            logger.info(f"Loading data from {csv_path}")
-
-            if not csv_path.exists():
-                raise FileNotFoundError(f"Dataset file not found: {csv_path}")
-
-            # Load the CSV file
-            df = pd.read_csv(csv_path)
-
-            # Ensure we have 'time' column and convert to datetime
-            if "time" in df.columns:
-                df["time"] = pd.to_datetime(
-                    df["time"], format="%d.%m.%Y %H:%M:%S.%f"
-                )  # Tambahkan format yang benar
-                df.set_index("time", inplace=True)
-            else:
-                # If there's no time column, check if there's a datetime column
-                datetime_cols = [
-                    col
-                    for col in df.columns
-                    if "date" in col.lower() or "time" in col.lower()
-                ]
-                if datetime_cols:
-                    df[datetime_cols[0]] = pd.to_datetime(df[datetime_cols[0]])
-                    df.set_index(datetime_cols[0], inplace=True)
-                else:
-                    # If no obvious datetime column, create a simple index
-                    logger.warning(
-                        "No datetime column found, creating sequential index"
-                    )
-                    df.index = pd.date_range(start="2000-01-01", periods=len(df))
-
-            # Ensure all required columns exist
-            required_columns = self.config.PRICE_FEATURES
-            missing_columns = [col for col in required_columns if col not in df.columns]
-
-            if missing_columns:
-                raise ValueError(f"Missing required columns in CSV: {missing_columns}")
-
-            # Make sure column names are lowercase
-            df.columns = [col.lower() for col in df.columns]
-
-            # Ensure volume column exists (some CSVs might have 'volume' or 'tick_volume')
-            if "volume" not in df.columns and "tick_volume" in df.columns:
-                df["volume"] = df["tick_volume"]
-            elif "volume" not in df.columns:
-                # If no volume data, create dummy volume data
-                logger.warning("No volume data found, creating dummy volume data")
-                df["volume"] = 1
-
-            return df
-
-        except Exception as e:
-            logger.error(f"Error loading CSV data: {e}")
-            raise
+        logger.info(f"Saved training plot to {plot_path}")
 
     def train(self) -> bool:
-        """Train the model using CSV data"""
+        """Train the model"""
         try:
             logger.info(f"Starting training for {self.symbol} {self.timeframe}")
 
-            # Get training data from CSV instead of MT5
-            df = self._load_csv_data()
-            data = self._prepare_data(df, is_training=True)
+            # Load and prepare data
+            df = self._load_dataset()
+            tech_features, price_features, targets = self._prepare_data(df)
 
             # Split data
-            train_idx = int(len(data["target"]) * (1 - self.config.VALIDATION_SPLIT))
-
-            train_data = {
-                "technical_features": data["technical_features"][:train_idx],
-                "price_features_cnn": data["price_features_cnn"][:train_idx],
-                "target": data["target"][:train_idx],
-            }
-
-            val_data = {
-                "technical_features": data["technical_features"][train_idx:],
-                "price_features_cnn": data["price_features_cnn"][train_idx:],
-                "target": data["target"][train_idx:],
-            }
-
-            # Train XGBoost
-            self.xgb_model.fit(
-                train_data["technical_features"].reshape(len(train_data["target"]), -1),
-                train_data["target"],
-                eval_set=[
-                    (
-                        val_data["technical_features"].reshape(
-                            len(val_data["target"]), -1
-                        ),
-                        val_data["target"],
-                    )
-                ],
-                verbose=True,
+            X_tech_train, X_tech_val, X_price_train, X_price_val, y_train, y_val = (
+                train_test_split(
+                    tech_features,
+                    price_features,
+                    targets,
+                    test_size=self.config.VALIDATION_SPLIT,
+                    shuffle=False,
+                )
             )
 
-            # Clear memory
-            gc.collect()
+            # Compute class weights
+            class_weights = compute_class_weight(
+                "balanced", classes=np.unique(y_train), y=y_train
+            )
+            class_weights = dict(enumerate(class_weights))
 
-            # Train Deep Learning model
-            callbacks = [
-                tf.keras.callbacks.EarlyStopping(
-                    monitor="val_loss", patience=self.config.PATIENCE
+            logger.info(f"Class weights: {class_weights}")
+            logger.info(f"Training samples: {len(y_train)}")
+            logger.info(f"Validation samples: {len(y_val)}")
+
+            # Callbacks
+            callbacks_list = [
+                callbacks.EarlyStopping(
+                    monitor="val_loss",
+                    patience=self.config.PATIENCE,
+                    restore_best_weights=True,
                 ),
-                tf.keras.callbacks.ReduceLROnPlateau(
-                    monitor="val_loss", factor=0.5, patience=3
+                callbacks.ReduceLROnPlateau(
+                    monitor="val_loss", factor=0.5, patience=3, min_lr=1e-6
+                ),
+                callbacks.ModelCheckpoint(
+                    filepath=str(self._get_model_path()),
+                    monitor="val_loss",
+                    save_best_only=True,
                 ),
             ]
 
-            self.deep_model.fit(
-                [train_data["technical_features"], train_data["price_features_cnn"]],
-                train_data["target"],
+            # Train model
+            history = self.model.fit(
+                [X_tech_train, X_price_train],
+                y_train,
                 batch_size=self.config.BATCH_SIZE,
                 epochs=self.config.EPOCHS,
-                validation_data=(
-                    [val_data["technical_features"], val_data["price_features_cnn"]],
-                    val_data["target"],
-                ),
-                callbacks=callbacks,
+                validation_data=([X_tech_val, X_price_val], y_val),
+                class_weight=class_weights,
+                callbacks=callbacks_list,
                 verbose=1,
             )
 
-            # Save models
-            self._save_models()
+            # Save training plot
+            model_name = f"{self.symbol}_{self.timeframe}"
+            self._plot_training_history(history, model_name)
 
             logger.info("Training completed successfully")
             return True
 
         except Exception as e:
-            logger.error(f"Error in training: {e}")
+            logger.error(f"Error during training: {e}")
             return False
 
-    def predict(self) -> Optional[Dict]:
-        """Make prediction using latest data"""
+    def predict(self, df: pd.DataFrame) -> Optional[float]:
+        """Make prediction on given data"""
         try:
-            # Get latest data
-            df = self._get_historical_data()
-            data = self._prepare_data(df, is_training=False)
+            # Prepare data
+            tech_features, price_features, _ = self._prepare_data(df)
 
-            # Make predictions
-            xgb_pred = self.xgb_model.predict_proba(
-                data["technical_features"].reshape(1, -1)
-            )[0, 1]
+            if len(tech_features) == 0:
+                logger.warning("Not enough data for prediction")
+                return None
 
-            deep_pred = self.deep_model.predict(
-                [data["technical_features"], data["price_features_cnn"]], verbose=0
-            )[0, 0]
+            # Use the most recent sequence
+            tech_seq = tech_features[-1:].reshape(1, self.config.SEQUENCE_LENGTH, -1)
+            price_seq = price_features[-1:].reshape(
+                1, self.config.SEQUENCE_LENGTH, len(self.config.PRICE_FEATURES), 1
+            )
 
-            # Combine predictions
-            final_pred = (xgb_pred + deep_pred) / 2
-            confidence = abs(final_pred - 0.5) * 2
+            # Make prediction
+            prediction = self.model.predict([tech_seq, price_seq], verbose=0)[0][0]
 
-            # Get latest indicators
-            latest_data = df.iloc[-1]
-
-            signals = {
-                "rsi": "Overbought"
-                if latest_data["rsi_14"] > 70
-                else "Oversold"
-                if latest_data["rsi_14"] < 30
-                else "Neutral",
-                "macd": "Buy"
-                if latest_data["macd"] > latest_data["macd_signal"]
-                else "Sell",
-                "ma": "Buy"
-                if latest_data["sma_20"] > latest_data["sma_50"]
-                else "Sell",
-            }
-
-            return {
-                "symbol": self.symbol,
-                "timeframe": self.timeframe,
-                "prediction": float(final_pred),
-                "confidence": float(confidence),
-                "signals": signals,
-                "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-            }
+            return float(prediction)
 
         except Exception as e:
-            logger.error(f"Error in prediction: {e}")
+            logger.error(f"Error during prediction: {e}")
             return None

@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from src.bot import TelegramBot
+from bot import TelegramBot
 from config import BASE_DIR
 
 
@@ -14,9 +14,7 @@ def setup_logging():
         handlers=[logging.StreamHandler(), logging.FileHandler(str(log_file))],
     )
 
-    # Create logger
-    logger = logging.getLogger(__name__)
-    return logger
+    return logging.getLogger(__name__)
 
 
 def main():
@@ -24,9 +22,8 @@ def main():
     logger = setup_logging()
 
     try:
-        logger.info("Initializing XenfoAI Bot...")
+        logger.info("Starting Forex Prediction Bot...")
         bot = TelegramBot()
-        logger.info("Starting bot...")
         bot.run()
     except Exception as e:
         logger.error(f"Fatal error: {e}")
