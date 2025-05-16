@@ -1,25 +1,15 @@
-import os
 import logging
-from src.bot.telegram_bot import TelegramBot
-from src.utils.helpers import setup_logging
-from config import BOT_TOKEN
-
-logger = setup_logging(__name__)
+from src.bot import TelegramBot
 
 
 def main():
+    """Main entry point"""
     try:
-        token = BOT_TOKEN
-        if not token:
-            logger.error("Token bot telegram belum di set")
-            return
-
         bot = TelegramBot()
-        logger.info("Bot running...")
         bot.run()
-
     except Exception as e:
-        logger.error(f"Error di main: {str(e)}")
+        logging.error(f"Fatal error: {e}")
+        raise
 
 
 if __name__ == "__main__":

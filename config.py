@@ -1,46 +1,96 @@
 import os
 import logging
-import MetaTrader5 as mt5
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
-
-# KONFIGURASI PATH
+# Path Configuration
 BASE_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
 DATASETS_DIR = BASE_DIR / "datasets"
 MODELS_DIR = BASE_DIR / "models"
-LOGS_DIR = BASE_DIR / "logs"
 
-# Buat direktori yang diperlukan
-REQUIRED_DIR = [MODELS_DIR, LOGS_DIR, DATASETS_DIR]
-for directory in REQUIRED_DIR:
+# Create required directories
+REQUIRED_DIRS = [DATASETS_DIR, MODELS_DIR]
+for directory in REQUIRED_DIRS:
     directory.mkdir(parents=True, exist_ok=True)
 
-# Timeframe MT5
+# MT5 Configuration
 TIMEFRAMES = {
-    "M1": mt5.TIMEFRAME_M1,
-    "M5": mt5.TIMEFRAME_M5,
-    "M15": mt5.TIMEFRAME_M15,
-    "H1": mt5.TIMEFRAME_H1,
-    "H4": mt5.TIMEFRAME_H4,
-    "D1": mt5.TIMEFRAME_D1,
-    "W1": mt5.TIMEFRAME_W1,
+    "M1": "TIMEFRAME_M1",
+    "M5": "TIMEFRAME_M5",
+    "M15": "TIMEFRAME_M15",
+    "H1": "TIMEFRAME_H1",
+    "H4": "TIMEFRAME_H4",
+    "D1": "TIMEFRAME_D1",
+    "W1": "TIMEFRAME_W1",
 }
 
-# Konfigurasi Telegram
-BOT_TOKEN = "7667262262:AAFYkfcdd8OZQskNYQPJ9KbVO8rGE3rvouI"
-ADMIN_ID = [1198920849]
+# Trading Configuration
+SYMBOLS = ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD"]  # Tambahkan simbol yang diperlukan
 
-# Konfigurasi MT5
-MT5_LOGIN = 5035979858
+# MetaTrader5 Credentials
+MT5_LOGIN = "5035979858"
 MT5_PASSWORD = "N@Al6mVk"
 MT5_SERVER = "MetaQuotes-Demo"
 
-# Resource Management
-MAX_MEMORY_USAGE = 6.0  # GB
-MAX_CPU_USAGE = 75  # Percent
-ENABLE_GPU = False  # Set True jika GPU tersedia
+# Telegram Configuration
+BOT_TOKEN = "7667262262:AAFYkfcdd8OZQskNYQPJ9KbVO8rGE3rvouI"
+ADMIN_IDS = [1198920849]  # List admin user IDs
 
-# Cache Management
-CACHE_EXPIRY = 3600  # Detik
-MAX_CACHE_SIZE = 1.0  # GB
+
+# Model Configuration
+class ModelConfig:
+    # Training
+    SEQUENCE_LENGTH = 60
+    BATCH_SIZE = 32
+    EPOCHS = 50
+    VALIDATION_SPLIT = 0.2
+    LEARNING_RATE = 0.001
+    PATIENCE = 5
+
+    # Model Architecture
+    CNN_FILTERS = [32, 64, 128]
+    CNN_KERNEL_SIZES = [3, 3, 3]
+    CNN_POOL_SIZES = [2, 2, 2]
+    CNN_DROPOUT = 0.2
+
+    LSTM_UNITS = [100, 50]
+    LSTM_DROPOUT = 0.2
+
+    TRANSFORMER_HEAD_SIZE = 256
+    TRANSFORMER_NUM_HEADS = 4
+    TRANSFORMER_FF_DIM = 4
+    TRANSFORMER_DROPOUT = 0.2
+
+    # Feature Engineering
+    TECHNICAL_FEATURES = [
+        "rsi_14",
+        "macd",
+        "macd_signal",
+        "macd_hist",
+        "bb_upper",
+        "bb_middle",
+        "bb_lower",
+        "sma_20",
+        "sma_50",
+        "ema_9",
+        "ema_21",
+        "atr_14",
+        "adx_14",
+        "cci_20",
+        "stoch_k",
+        "stoch_d",
+    ]
+
+    PRICE_FEATURES = ["open", "high", "low", "close", "volume"]
+
+
+# Logging Configuration
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(), logging.FileHandler(BASE_DIR / "app.log")],
+)
+
+# Resource Management
+MAX_MEMORY_GB = 6.0  # Maximum memory usage in GB
+MAX_CPU_PERCENT = 75  # Maximum CPU usage in percent
+CACHE_EXPIRY = 3600  # Cache expiry in seconds
