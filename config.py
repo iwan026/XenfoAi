@@ -16,7 +16,17 @@ for directory in [DATASETS_DIR, MODELS_DIR, LOGS_DIR, PLOTS_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
 # Trading Configuration
-SYMBOLS = ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD"]
+SYMBOLS = [
+    "BTCUSD",
+    "ETHUSD",
+    "EURUSD",
+    "GBPJPY",
+    "GBPUSD",
+    "USDCAD",
+    "USDCHF",
+    "USDJPY",
+    "XAUUSD",
+]
 
 # MetaTrader5 Configuration
 MT5_LOGIN = 5035979858

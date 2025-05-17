@@ -5,11 +5,14 @@ import MetaTrader5 as mt5
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import logging
+import joblib
+from mplfinance.original_flavor import candlestick_ohlc
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Tuple
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.exceptions import NotFittedError
 
 # TensorFlow/Keras imports
 from tensorflow.keras import models, optimizers, regularizers
@@ -50,7 +53,8 @@ class ForexModel:
         self.symbol = symbol.upper()
         self.timeframe = "H1"
         self.config = ModelConfig()
-        self.scaler = MinMaxScaler()
+        self.scaler = None
+        self._is_scaler_fitted = False
 
         # Model and paths
         self.model = None
@@ -62,6 +66,10 @@ class ForexModel:
         self._load_or_create_model()
 
         logger.info(f"Initialized ForexModel for {self.symbol} {self.timeframe}")
+
+    def _get_scaler_path(self) -> Path:
+        """Get path for scaler file"""
+        return self.model_dir / f"{self.symbol}_scaler.pkl"
 
     def _get_model_path(self) -> Path:
         """Get path for model file"""
@@ -128,8 +136,17 @@ class ForexModel:
         self, df: pd.DataFrame
     ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
         """Prepare sequences and targets"""
+        if self.scaler is None:
+            self.scaler = MinMaxScaler()
+
         # Normalize data
-        scaled_data = self.scaler.fit_transform(df)
+        if not self._is_scaler_fitted:
+            scaled_data = self.scaler.fit_transform(df)
+            self._is_scaler_fitted = True
+            # Save scaler state
+            joblib.dump(self.scaler, self._get_scaler_path())
+        else:
+            scaled_data = self.scaler.transform(df)
 
         X, y_dir, y_price = [], [], []
         for i in range(len(scaled_data) - self.config.SEQUENCE_LENGTH - 1):
@@ -146,6 +163,11 @@ class ForexModel:
         """Train the model with time series validation"""
         try:
             df = self._load_dataset()
+
+            # Reset scaler for new training
+            self.scaler = MinMaxScaler()
+            self._is_scaler_fitted = False
+
             X, y = self._prepare_data(df)
 
             tscv = TimeSeriesSplit(n_splits=3)
@@ -184,22 +206,33 @@ class ForexModel:
                 self._plot_training_history(best_history, self.symbol)
 
             logger.info(f"Training completed with best val loss: {best_val_loss:.4f}")
+
+            # Ensure scaler is saved
+            if self._is_scaler_fitted:
+                joblib.dump(self.scaler, self._get_scaler_path())
+
             return True
 
         except Exception as e:
+            self.scaler = None
+            self._is_scaler_fitted = False
             logger.error(f"Training failed: {str(e)}")
             return False
 
     def predict(self, use_realtime: bool = True) -> Optional[Dict]:
         """Make prediction for next candle"""
         try:
-            # Get data
-            if use_realtime:
-                df = self._get_realtime_data()
-            else:
-                df = self._load_dataset()
+            if not self._is_scaler_fitted:
+                raise NotFittedError("Scaler not fitted. Train model first!")
 
-            # Prepare last sequence
+            # Get data
+            df = self._get_realtime_data() if use_realtime else self._load_dataset()
+
+            # Validate data
+            if len(df) < self.config.SEQUENCE_LENGTH:
+                raise ValueError("Not enough data for prediction")
+
+            # Transform data
             scaled_data = self.scaler.transform(df)
             seq = scaled_data[-self.config.SEQUENCE_LENGTH :]
             seq = np.expand_dims(seq, axis=0)
@@ -364,6 +397,11 @@ class ForexModel:
         if model_path.exists():
             logger.info(f"Loading existing model from {model_path}")
             self.model = models.load_model(model_path)
+            scaler_path = self._get_scaler_path()
+            if scaler_path.exists():
+                self.scaler = joblib.load(scaler_path)
+                self._is_scaler_fitted = True
+                logger.info(f"Loaded scaler state for {self.symbol}")
         else:
             logger.info("Creating new model")
             self.model = self._build_model()
