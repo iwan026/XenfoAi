@@ -29,9 +29,9 @@ SYMBOLS = [
 ]
 
 # MetaTrader5 Configuration
-MT5_LOGIN = 5035979858
-MT5_PASSWORD = "N@Al6mVk"
-MT5_SERVER = "MetaQuotes-Demo"
+MT5_LOGIN = 204313635
+MT5_PASSWORD = "123@Demo"
+MT5_SERVER = "Exness-MT5Trial7"
 
 # Telegram Configuration
 BOT_TOKEN = "7667262262:AAFYkfcdd8OZQskNYQPJ9KbVO8rGE3rvouI"
