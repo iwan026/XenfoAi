@@ -37,9 +37,9 @@ class TelegramBot:
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
-            "👋 Welcome to Forex Prediction Bot!\n"
+            "👋 Welcome to Forex Direction Predictor!\n"
             "Available commands:\n"
-            "/predict [PAIR] - Get prediction\n"
+            "/predict [PAIR] - Get price direction prediction\n"
             "/train [PAIR] - Train model\n"
             "/status - Bot status"
         )
@@ -47,9 +47,9 @@ class TelegramBot:
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         help_msg = (
             "🤖 *Bot Commands*\n\n"
-            "*/predict [PAIR]* - Predict next candle\n"
+            "*/predict [PAIR]* - Predict price direction\n"
             "Example: `/predict EURUSD`\n\n"
-            "*/train [PAIR]* - Train model\n"
+            "*/train [PAIR]* - Train direction model\n"
             "Example: `/train EURUSD`\n\n"
             "Available pairs: " + ", ".join(SYMBOLS)
         )
@@ -75,7 +75,7 @@ class TelegramBot:
                 self.active_models[symbol] = ForexModel(symbol)
 
             processing_msg = await update.message.reply_text(
-                f"⏳ Predicting {symbol}..."
+                f"⏳ Predicting {symbol} direction..."
             )
 
             try:
@@ -85,11 +85,14 @@ class TelegramBot:
 
                 if result:
                     pred = result["prediction"]
+                    direction_emoji = "🟢" if pred["direction"] == "UP" else "🔴"
+
                     prediction_msg = (
-                        f"📊 *{symbol} Price Prediction*\n\n"
+                        f"📊 *{symbol} Direction Prediction*\n\n"
                         f"*Current Price:* {result['current_close']:.5f}\n"
-                        f"*Predicted Price ({pred['horizon']}h):* {pred['next_close']:.5f}\n"
-                        f"*Expected Change:* {pred['price_change']:.5f}\n\n"
+                        f"*Direction ({pred['horizon']}h):* {direction_emoji} {pred['direction']}\n"
+                        f"*Confidence:* {pred['confidence']:.2f}%\n"
+                        f"*Target Price:* {pred['next_close']:.5f}\n\n"
                         f"🕒 {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
                     )
 
@@ -129,7 +132,7 @@ class TelegramBot:
                 return
 
             processing_msg = await update.message.reply_text(
-                f"⏳ Training {symbol} model..."
+                f"⏳ Training {symbol} direction model..."
             )
 
             if symbol not in self.active_models:

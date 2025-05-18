@@ -45,9 +45,17 @@ class ModelConfig:
     PREDICTION_HORIZON = 4
     MAX_HORIZON = 24
 
-    # Simplified features - only price data and ATR
+    # Extended features for direction prediction
     PRICE_FEATURES = ["open", "high", "low", "close", "volume"]
-    TECHNICAL_FEATURES = ["atr"]
+    TECHNICAL_FEATURES = [
+        "atr",  # Volatility indicator
+        "price_momentum_1",  # Short-term momentum
+        "price_momentum_3",  # Medium-term momentum
+        "ma_fast",  # Fast moving average
+        "ma_slow",  # Slow moving average
+        "ma_crossover",  # Moving average crossover signal
+        "direction",  # Current price direction
+    ]
 
     @property
     def ALL_FEATURES(self):
@@ -58,4 +66,4 @@ class ModelConfig:
     EPOCHS = 30
     LEARNING_RATE = 0.001
     PATIENCE = 5
-    DROPOUT_RATE = 0.2
+    DROPOUT_RATE = 0.3  # Slightly increased dropout for better generalization
