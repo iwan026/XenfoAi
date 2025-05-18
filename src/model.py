@@ -98,25 +98,26 @@ class ForexModel:
         return df
 
     def _add_market_structure_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add market structure features to dataframe"""
+        """Add market structure features with consistent column order"""
         df = df.copy()
 
-        # Calculate ATR and swing levels
+        # Calculate features
         df["atr"] = self._calculate_atr(df)
         df = self._calculate_swing_levels(df)
 
-        # Fill any NaN values that might have been created
-        df.fillna(method="bfill", inplace=True)
-        df.fillna(method="ffill", inplace=True)
+        # Reorder columns to match ALL_FEATURES order
+        features = self.config.ALL_FEATURES
+        missing = [f for f in features if f not in df.columns]
 
-        return df
+        if missing:
+            raise ValueError(f"Missing features after processing: {missing}")
+
+        return df[features].copy()
 
     def _build_model(self):
         """Build CNN-LSTM model with multi-horizon predictions"""
-        # Input layer
-        input_layer = Input(
-            shape=(self.config.SEQUENCE_LENGTH, len(self.config.ALL_FEATURES))
-        )
+        n_features = len(self.config.ALL_FEATURES)
+        input_layer = Input(shape=(self.config.SEQUENCE_LENGTH, n_features))
 
         # CNN Branch
         cnn = Conv1D(32, 3, activation="relu", padding="same")(input_layer)
@@ -134,7 +135,7 @@ class ForexModel:
         # Combined model
         combined = Concatenate()([cnn, lstm])
         combined = Dense(64, activation="relu")(combined)
-        combined = Dropout(0.3)(combined)
+        combined = Dropout(self.config.DROPOUT_RATE)(combined)
 
         # Outputs for each horizon
         outputs = []
@@ -207,18 +208,21 @@ class ForexModel:
         if self.scaler is None:
             self.scaler = MinMaxScaler()
 
+        # Gunakan ALL_FEATURES bukan PRICE_FEATURES
+        feature_columns = self.config.ALL_FEATURES
+        data = df[feature_columns].values
+
         # Normalize data
         if not self._is_scaler_fitted:
-            scaled_data = self.scaler.fit_transform(df)
+            scaled_data = self.scaler.fit_transform(data)
             self._is_scaler_fitted = True
-            # Save scaler state
             joblib.dump(self.scaler, self._get_scaler_path())
         else:
-            scaled_data = self.scaler.transform(df)
+            scaled_data = self.scaler.transform(data)
 
         X, y = [], {}
 
-        # Initialize target dictionaries for each horizon
+        # Initialize target dictionaries
         for horizon in self.config.PREDICTION_HORIZONS:
             y[f"direction_{horizon}"] = []
             y[f"price_{horizon}"] = []
@@ -231,15 +235,15 @@ class ForexModel:
             seq = scaled_data[i : i + self.config.SEQUENCE_LENGTH]
             X.append(seq)
 
-            # Create targets for each horizon
             for horizon in self.config.PREDICTION_HORIZONS:
                 if i + self.config.SEQUENCE_LENGTH + horizon >= len(scaled_data):
                     continue
 
                 next_close = scaled_data[
-                    i + self.config.SEQUENCE_LENGTH + horizon - 1, 3
-                ]  # Close price
-                current_close = seq[-1, 3]
+                    i + self.config.SEQUENCE_LENGTH + horizon - 1,
+                    self.config.ALL_FEATURES.index("close"),
+                ]
+                current_close = seq[-1, self.config.ALL_FEATURES.index("close")]
 
                 y[f"direction_{horizon}"].append(1 if next_close > current_close else 0)
                 y[f"price_{horizon}"].append(next_close - current_close)
