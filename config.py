@@ -42,7 +42,13 @@ ADMIN_IDS = [1198920849]
 class ModelConfig:
     # Data parameters
     SEQUENCE_LENGTH = 60  # 60 candles (60 hours)
+    PREDICTION_HORIZONS = [1, 3, 8, 24]  # Predictions for 1h, 3h, 8h, and 24h ahead
     PRICE_FEATURES = ["open", "high", "low", "close", "volume"]
+    MARKET_STRUCTURE_FEATURES = ["atr", "dist_from_high", "dist_from_low"]
+
+    @property
+    def ALL_FEATURES(self):
+        return self.PRICE_FEATURES + self.MARKET_STRUCTURE_FEATURES
 
     # Training parameters
     BATCH_SIZE = 32

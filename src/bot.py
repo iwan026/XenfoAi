@@ -108,20 +108,32 @@ class TelegramBot:
                 )
 
                 if result:
-                    direction = "🟢 BUY" if result["direction"] > 0.5 else "🔴 SELL"
-                    confidence = max(result["direction"], 1 - result["direction"])
+                    # Prepare prediction message
+                    prediction_msg = f"📊 *{symbol} Multi-Horizon Predictions*\n\n"
+                    prediction_msg += (
+                        f"*Current Price:* {result['current_close']:.5f}\n\n"
+                    )
+
+                    for horizon, pred in result["predictions"].items():
+                        direction = "🟢 BUY" if pred["direction"] > 0.5 else "🔴 SELL"
+                        confidence = max(pred["direction"], 1 - pred["direction"])
+
+                        prediction_msg += (
+                            f"*{horizon}h Prediction:*\n"
+                            f"- Signal: {direction}\n"
+                            f"- Confidence: {confidence:.1%}\n"
+                            f"- Predicted Close: {pred['next_close']:.5f}\n"
+                            f"- Price Change: {pred['price_change']:.5f}\n\n"
+                        )
+
+                    prediction_msg += (
+                        f"🕒 {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
+                    )
 
                     with open(result["chart_path"], "rb") as chart_file:
                         await update.message.reply_photo(
                             photo=chart_file,
-                            caption=(
-                                f"📊 *{symbol} Prediction*\n\n"
-                                f"*Signal:* {direction}\n"
-                                f"*Confidence:* {confidence:.1%}\n"
-                                f"*Current Price:* {result['current_close']:.5f}\n"
-                                f"*Predicted Next Close:* {result['next_close']:.5f}\n\n"
-                                f"🕒 {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
-                            ),
+                            caption=prediction_msg,
                             parse_mode="Markdown",
                         )
                 else:

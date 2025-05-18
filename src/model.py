@@ -9,7 +9,7 @@ import joblib
 from mplfinance.original_flavor import candlestick_ohlc
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.exceptions import NotFittedError
@@ -79,11 +79,43 @@ class ForexModel:
         """Get path for CSV dataset file"""
         return self.dataset_dir / f"{self.symbol}.csv"
 
+    def _calculate_atr(self, df: pd.DataFrame, window: int = 14) -> pd.Series:
+        """Calculate Average True Range"""
+        high_low = df["high"] - df["low"]
+        high_close = np.abs(df["high"] - df["close"].shift())
+        low_close = np.abs(df["low"] - df["close"].shift())
+        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        return true_range.rolling(window).mean()
+
+    def _calculate_swing_levels(
+        self, df: pd.DataFrame, window: int = 20
+    ) -> pd.DataFrame:
+        """Calculate swing highs and lows"""
+        df["swing_high"] = df["high"].rolling(window, center=True).max()
+        df["swing_low"] = df["low"].rolling(window, center=True).min()
+        df["dist_from_high"] = (df["swing_high"] - df["close"]) / df["swing_high"]
+        df["dist_from_low"] = (df["close"] - df["swing_low"]) / df["swing_low"]
+        return df
+
+    def _add_market_structure_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add market structure features to dataframe"""
+        df = df.copy()
+
+        # Calculate ATR and swing levels
+        df["atr"] = self._calculate_atr(df)
+        df = self._calculate_swing_levels(df)
+
+        # Fill any NaN values that might have been created
+        df.fillna(method="bfill", inplace=True)
+        df.fillna(method="ffill", inplace=True)
+
+        return df
+
     def _build_model(self):
-        """Build CNN-LSTM model for raw OHLCV data"""
+        """Build CNN-LSTM model with multi-horizon predictions"""
         # Input layer
         input_layer = Input(
-            shape=(self.config.SEQUENCE_LENGTH, len(self.config.PRICE_FEATURES))
+            shape=(self.config.SEQUENCE_LENGTH, len(self.config.ALL_FEATURES))
         )
 
         # CNN Branch
@@ -104,17 +136,50 @@ class ForexModel:
         combined = Dense(64, activation="relu")(combined)
         combined = Dropout(0.3)(combined)
 
-        # Outputs
-        direction_output = Dense(1, activation="sigmoid", name="direction")(combined)
-        price_output = Dense(1, activation="linear", name="price")(combined)
+        # Outputs for each horizon
+        outputs = []
+        for horizon in self.config.PREDICTION_HORIZONS:
+            # Direction output (binary)
+            direction_output = Dense(
+                1, activation="sigmoid", name=f"direction_{horizon}"
+            )(combined)
 
-        model = Model(inputs=input_layer, outputs=[direction_output, price_output])
+            # Price change output (regression)
+            price_output = Dense(1, activation="linear", name=f"price_{horizon}")(
+                combined
+            )
+
+            outputs.extend([direction_output, price_output])
+
+        model = Model(inputs=input_layer, outputs=outputs)
+
+        # Prepare loss functions and weights for each horizon
+        loss_dict = {}
+        loss_weights_dict = {}
+        for i, horizon in enumerate(self.config.PREDICTION_HORIZONS):
+            loss_dict[f"direction_{horizon}"] = "binary_crossentropy"
+            loss_dict[f"price_{horizon}"] = "mse"
+            loss_weights_dict[f"direction_{horizon}"] = 0.7 / len(
+                self.config.PREDICTION_HORIZONS
+            )
+            loss_weights_dict[f"price_{horizon}"] = 0.3 / len(
+                self.config.PREDICTION_HORIZONS
+            )
 
         model.compile(
             optimizer=optimizers.Adam(self.config.LEARNING_RATE),
-            loss={"direction": "binary_crossentropy", "price": "mse"},
-            metrics={"direction": "accuracy", "price": "mae"},
-            loss_weights={"direction": 0.7, "price": 0.3},
+            loss=loss_dict,
+            metrics={
+                **{
+                    f"direction_{horizon}": "accuracy"
+                    for horizon in self.config.PREDICTION_HORIZONS
+                },
+                **{
+                    f"price_{horizon}": "mae"
+                    for horizon in self.config.PREDICTION_HORIZONS
+                },
+            },
+            loss_weights=loss_weights_dict,
         )
 
         return model
@@ -130,12 +195,15 @@ class ForexModel:
         if not all(col in df.columns for col in required_cols):
             raise ValueError("Missing required columns in dataset")
 
-        return df[required_cols]
+        # Add market structure features
+        df = self._add_market_structure_features(df)
+
+        return df
 
     def _prepare_data(
         self, df: pd.DataFrame
     ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
-        """Prepare sequences and targets"""
+        """Prepare sequences and targets for multiple horizons"""
         if self.scaler is None:
             self.scaler = MinMaxScaler()
 
@@ -148,16 +216,40 @@ class ForexModel:
         else:
             scaled_data = self.scaler.transform(df)
 
-        X, y_dir, y_price = [], [], []
-        for i in range(len(scaled_data) - self.config.SEQUENCE_LENGTH - 1):
+        X, y = [], {}
+
+        # Initialize target dictionaries for each horizon
+        for horizon in self.config.PREDICTION_HORIZONS:
+            y[f"direction_{horizon}"] = []
+            y[f"price_{horizon}"] = []
+
+        for i in range(
+            len(scaled_data)
+            - self.config.SEQUENCE_LENGTH
+            - max(self.config.PREDICTION_HORIZONS)
+        ):
             seq = scaled_data[i : i + self.config.SEQUENCE_LENGTH]
-            next_close = scaled_data[i + self.config.SEQUENCE_LENGTH, 3]  # Close price
-
             X.append(seq)
-            y_dir.append(1 if next_close > seq[-1, 3] else 0)
-            y_price.append(next_close - seq[-1, 3])
 
-        return np.array(X), {"direction": np.array(y_dir), "price": np.array(y_price)}
+            # Create targets for each horizon
+            for horizon in self.config.PREDICTION_HORIZONS:
+                if i + self.config.SEQUENCE_LENGTH + horizon >= len(scaled_data):
+                    continue
+
+                next_close = scaled_data[
+                    i + self.config.SEQUENCE_LENGTH + horizon - 1, 3
+                ]  # Close price
+                current_close = seq[-1, 3]
+
+                y[f"direction_{horizon}"].append(1 if next_close > current_close else 0)
+                y[f"price_{horizon}"].append(next_close - current_close)
+
+        # Convert to numpy arrays
+        X = np.array(X)
+        for key in y:
+            y[key] = np.array(y[key])
+
+        return X, y
 
     def train(self) -> bool:
         """Train the model with time series validation"""
@@ -220,13 +312,14 @@ class ForexModel:
             return False
 
     def predict(self, use_realtime: bool = True) -> Optional[Dict]:
-        """Make prediction for next candle"""
+        """Make prediction for multiple horizons"""
         try:
             if not self._is_scaler_fitted:
                 raise NotFittedError("Scaler not fitted. Train model first!")
 
             # Get data
             df = self._get_realtime_data() if use_realtime else self._load_dataset()
+            df = self._add_market_structure_features(df)
 
             # Validate data
             if len(df) < self.config.SEQUENCE_LENGTH:
@@ -238,14 +331,27 @@ class ForexModel:
             seq = np.expand_dims(seq, axis=0)
 
             # Make prediction
-            direction_pred, price_pred = self.model.predict(seq, verbose=0)
+            predictions = self.model.predict(seq, verbose=0)
 
+            # Organize predictions by horizon
             result = {
-                "direction": float(direction_pred[0][0]),
-                "price_change": float(price_pred[0][0]),
                 "current_close": float(df["close"].iloc[-1]),
-                "next_close": float(df["close"].iloc[-1] + price_pred[0][0]),
+                "predictions": {},
+                "chart_path": None,
             }
+
+            for i, horizon in enumerate(self.config.PREDICTION_HORIZONS):
+                direction_idx = i * 2
+                price_idx = i * 2 + 1
+
+                direction_pred = predictions[direction_idx][0][0]
+                price_pred = predictions[price_idx][0][0]
+
+                result["predictions"][horizon] = {
+                    "direction": float(direction_pred),
+                    "price_change": float(price_pred),
+                    "next_close": float(df["close"].iloc[-1] + price_pred),
+                }
 
             # Generate chart
             chart_path = self._plot_chart(df, result)
@@ -302,29 +408,36 @@ class ForexModel:
         plt.xlabel("Epoch")
         plt.legend()
 
-        # Plot Direction Accuracy
+        # Plot Direction Accuracy (first horizon only for simplicity)
+        first_horizon = self.config.PREDICTION_HORIZONS[0]
         plt.subplot(2, 2, 2)
-        plt.plot(history.history["direction_accuracy"], label="Train Acc")
-        plt.plot(history.history["val_direction_accuracy"], label="Val Acc")
-        plt.title("Direction Prediction Accuracy")
+        plt.plot(
+            history.history[f"direction_{first_horizon}_accuracy"], label="Train Acc"
+        )
+        plt.plot(
+            history.history[f"val_direction_{first_horizon}_accuracy"], label="Val Acc"
+        )
+        plt.title(f"Direction Accuracy (Horizon {first_horizon})")
         plt.ylabel("Accuracy")
         plt.xlabel("Epoch")
         plt.legend()
 
-        # Plot Price MAE
+        # Plot Price MAE (first horizon only for simplicity)
         plt.subplot(2, 2, 3)
-        plt.plot(history.history["price_mae"], label="Train MAE")
-        plt.plot(history.history["val_price_mae"], label="Val MAE")
-        plt.title("Price Prediction MAE")
+        plt.plot(history.history[f"price_{first_horizon}_mae"], label="Train MAE")
+        plt.plot(history.history[f"val_price_{first_horizon}_mae"], label="Val MAE")
+        plt.title(f"Price MAE (Horizon {first_horizon})")
         plt.ylabel("MAE")
         plt.xlabel("Epoch")
         plt.legend()
 
-        # Plot Direction Loss
+        # Plot Direction Loss (first horizon only for simplicity)
         plt.subplot(2, 2, 4)
-        plt.plot(history.history["direction_loss"], label="Train Loss")
-        plt.plot(history.history["val_direction_loss"], label="Val Loss")
-        plt.title("Direction Prediction Loss")
+        plt.plot(history.history[f"direction_{first_horizon}_loss"], label="Train Loss")
+        plt.plot(
+            history.history[f"val_direction_{first_horizon}_loss"], label="Val Loss"
+        )
+        plt.title(f"Direction Loss (Horizon {first_horizon})")
         plt.ylabel("Loss")
         plt.xlabel("Epoch")
         plt.legend()
@@ -350,22 +463,26 @@ class ForexModel:
             ax, ohlc, width=0.6 / 24, colorup="#26a69a", colordown="#ef5350", alpha=1.0
         )
 
-        # Add prediction markers
-        pred_color = "#26a69a" if predictions["direction"] > 0.5 else "#ef5350"
-        ax.axhline(
-            predictions["next_close"],
-            color=pred_color,
-            linestyle="--",
-            linewidth=1,
-            alpha=0.7,
-            label=f"Pred: {predictions['next_close']:.5f}",
-        )
+        # Add prediction markers for each horizon
+        colors = [
+            "#4CAF50",
+            "#FFC107",
+            "#2196F3",
+        ]  # Green, Yellow, Blue for different horizons
+        for i, (horizon, pred) in enumerate(predictions["predictions"].items()):
+            pred_color = colors[i % len(colors)]
+            ax.axhline(
+                pred["next_close"],
+                color=pred_color,
+                linestyle="--",
+                linewidth=1,
+                alpha=0.7,
+                label=f"{horizon}h Pred: {pred['next_close']:.5f}",
+            )
 
         # Style chart
         ax.set_title(
-            f"{self.symbol} {self.timeframe} - "
-            f"Prediction: {'BUY' if predictions['direction'] > 0.5 else 'SELL'} "
-            f"({predictions['direction']:.1%})",
+            f"{self.symbol} {self.timeframe} - Multi-Horizon Predictions",
             color="white",
         )
         ax.set_facecolor("#131722")
