@@ -40,19 +40,22 @@ ADMIN_IDS = [1198920849]
 
 # Model Configuration
 class ModelConfig:
-    # Data parameters
-    SEQUENCE_LENGTH = 60  # 60 candles (60 hours)
-    PREDICTION_HORIZONS = [1, 3, 8, 24]  # Predictions for 1h, 3h, 8h, and 24h ahead
+    # Auto-detected parameters will override these defaults
+    SEQUENCE_LENGTH = 60
+    PREDICTION_HORIZON = 4
+    MAX_HORIZON = 24
+
+    # Simplified features - only price data and ATR
     PRICE_FEATURES = ["open", "high", "low", "close", "volume"]
-    MARKET_STRUCTURE_FEATURES = ["atr", "dist_from_high", "dist_from_low"]
+    TECHNICAL_FEATURES = ["atr"]
 
     @property
     def ALL_FEATURES(self):
-        return self.PRICE_FEATURES + self.MARKET_STRUCTURE_FEATURES
+        return self.PRICE_FEATURES + self.TECHNICAL_FEATURES
 
     # Training parameters
     BATCH_SIZE = 32
-    EPOCHS = 50
+    EPOCHS = 30
     LEARNING_RATE = 0.001
-    PATIENCE = 10
-    DROPOUT_RATE = 0.3
+    PATIENCE = 5
+    DROPOUT_RATE = 0.2
